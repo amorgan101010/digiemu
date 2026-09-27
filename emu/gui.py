@@ -995,6 +995,9 @@ class Emulator(threading.Thread):
                   'image; falling back to reading the framebuffer at an '
                   'arbitrary moment, which may tear', flush=True)
         self._pits = pits
+        # MIDI in rides the same instruction clock, byte by byte on emulated
+        # time (MidiIn's docstring), rather than at chunk boundaries.
+        self.midi_in.attach(m, pits.sources[0].ips)
         if self._audio_sources:
             # The SSI clock starts at the timers' own instruction count, so
             # both share one clock from the first step.
@@ -1046,17 +1049,18 @@ class Emulator(threading.Thread):
                 if self._audio_sources:
                     # The SSI's request period is in the same instructions.
                     self._audio_sources[0].ips = n
+                self.midi_in.set_ips(n)
                 print('[gui] ips -> %d at %d' % (n, self.stats['instrs']),
                       flush=True)
             pc = self._drain_input(m, profile, pc)
-            if self.midi_in.deliver(m) or (
-                    self.midi_out is not None and self.midi_out.deliver(m)):
+            if self.midi_out is not None and self.midi_out.deliver(m):
                 pc = m.uc.reg_read(UC_M68K_REG_PC)
             # A chunk of about 5 emulated ms: BUDGET instructions is that at
             # the stock rate, but a fraction of it once audio raises the rate.
             budget = max(BUDGET, pits.sources[0].ips // 200)
             pc, executed, stop = spin(m, pc, budget, pits=pits, fast=self.fast,
-                                      async_events=self._audio_sources)
+                                      async_events=tuple(self._audio_sources)
+                                      + (self.midi_in,))
             if stop != 'limit':
                 self.stats['status'] = 'halted: %s' % stop
                 # Also to stdout: the status label is invisible to anyone
@@ -1363,9 +1367,9 @@ class Emulator(threading.Thread):
         mi = self.midi_in
         if mi.received:
             print('[midi] in: %d bytes received, %d delivered, vector taken '
-                  '%d times, %d boundaries deferred'
-                  % (mi.received, mi.delivered, mi.raised, mi.deferred),
-                  flush=True)
+                  '%d times, %d boundaries deferred, %d late'
+                  % (mi.received, mi.delivered, mi.raised, mi.deferred,
+                     mi.late), flush=True)
 
     def _close_live(self):
         out, self._live_out = self._live_out, None

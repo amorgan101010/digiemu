@@ -33,16 +33,19 @@ midi`): a virtual input port where the platform has them (Linux, macOS), or
 an existing port named by DIGIEMU_MIDI_IN (a substring of its name), and a
 virtual output port of the same name (DIGIEMU_MIDI_OUT likewise).
 """
+import collections
+import heapq
 import os
 import re
 import struct
 import threading
+import time
 
 from unicorn import UC_HOOK_MEM_WRITE
 from unicorn.m68k_const import UC_M68K_REG_SR
 
 from emu.edma_sw import iteration_count, modulo_add
-from emu.pit import interrupt_level
+from emu.pit import PENDING_STEP, interrupt_level, render_holds
 
 TCD36 = 0xFC045000 + 36 * 0x20
 TCD37 = 0xFC045000 + 37 * 0x20
@@ -57,7 +60,16 @@ RX_VECTOR = 156
 TX_VECTOR = 181                 # UART9 (INTC1 source 53)
 TX_DMA_VECTOR = 157             # eDMA channel 37 done (INTC1 source 29)
 TX_CHANNEL = 37
-MAX_FEED = 4096                 # bytes per delivery, well inside the ring
+# Bytes per delivery: DIN MIDI's pace. At 31250 baud a byte takes 320 us, so
+# the ~5 ms chunk the GUI runs between deliveries carries about 16 of them.
+# The firmware times its clock input by DTIM0's counter as each byte's
+# interrupt runs (emu/dtim.py, Dtims._serve_count): it sums the gaps across
+# 24 clocks and divides by that sum. That counter moves at step boundaries,
+# so a backlog written all at once -- clock that queued up while the emulator
+# was loading, or while the host stalled -- would give 24 clocks one
+# timestamp, a sum of 0, a divide-by-zero and a halt on the firmware's
+# EXCEPTION screen. Paced like the wire, a beat's clocks span deliveries.
+MAX_FEED = 16
 
 
 def _take(m, vector):
@@ -84,20 +96,207 @@ def feed(m, data):
 
 
 class MidiIn:
-    """Bytes from any thread, delivered to the guest at a chunk boundary."""
+    """Bytes from any thread, delivered to the guest.
+
+    Two ways in. `deliver` writes whatever is pending at once, at a chunk
+    boundary (tests and tools). `attach` makes this an event source for
+    longrun.spin instead, which is what the GUI uses: each byte is stamped
+    with the host time it arrived and delivered at the matching point of
+    *emulated* time, so the gaps between bytes survive. The firmware times
+    MIDI clock by those gaps (emu/dtim.py, Dtims._serve_count), and the
+    emulator runs in bursts -- ahead to fill its audio cushion, then waiting,
+    and behind when the host is busy -- so a byte handed over "at the next
+    chunk" lands tens to hundreds of ms early or late in guest time, which
+    the firmware reads as tempo jumping by tens of BPM. Gearmulator gets the
+    same result by giving each event its sample position in the audio block.
+
+    Host time maps to emulated time through the offset's upper envelope:
+    it follows the furthest the emulator runs ahead of the host (it bursts
+    ahead to fill its audio cushion) and sinks by `DECAY` per second, so a
+    byte's slot, `MARGIN_S` past that, is still in the future when the byte
+    is scheduled. A fixed average plus 30 ms was tried first and left 12% of
+    a Digitone session's bytes late -- delivered on arrival, timing lost. A
+    byte is never placed closer than one DIN byte time (`BYTE_S`) after the
+    one before, which also spreads a backlog; bytes due within `WINDOW_S` of
+    each other go in together, so a SysEx does not cut the run into 320 us
+    steps (clock bytes are 20 ms and more apart).
+    """
+
+    MARGIN_S = 0.015                # covers the clock smoother moving a tick earlier
+    DECAY = 0.05                    # envelope sinks 50 ms per second
+    BYTE_S = 10 / 31250             # one DIN byte: start + 8 data + stop
+    WINDOW_S = 0.001
+    # Clock smoothing (see _clock_slot): an alpha-beta tracker on 0xF8.
+    PLL_PHASE = 0.1                 # share of a tick's error taken at once
+    PLL_FREQ = PLL_PHASE ** 2 / (2 - PLL_PHASE)   # matched: follows a ramp
+    LOST_TICKS = 4
+    MAX_TICK_S = 0.25               # a longer gap is a pause (10 BPM and up)
 
     def __init__(self):
         self._lock = threading.Lock()
         self._pending = bytearray()
+        self._stamped = collections.deque()   # (host time, bytes)
+        self._queue = []                      # heap: (emulated target, seq, byte)
+        self._seq = 0
+        self._clk_raw = None                  # last 0xF8's unsmoothed slot
+        self._clk_pred = None                 # where the next one is expected
+        self._clk_period = None
+        self.m = None
+        self.ips = None
+        self._offset = None                   # emulated minus host*ips
+        self._offset_t = None
+        self._last_target = None
         self.received = 0           # bytes the host handed us
         self.delivered = 0          # bytes written into the ring
         self.raised = 0             # vector 156 taken
         self.deferred = 0           # boundaries where it could not be taken
+        self.late = 0               # bytes whose slot had already passed
 
     def put(self, data):
+        now = time.monotonic()
         with self._lock:
-            self._pending += bytes(data)
+            if self.m is None:
+                self._pending += bytes(data)
+            else:
+                self._stamped.append((now, bytes(data)))
             self.received += len(data)
+
+    def attach(self, m, ips):
+        """Deliver on emulated time from now on (see the class docstring)."""
+        with self._lock:
+            self.m, self.ips = m, ips
+            now = time.monotonic()
+            if self._pending:        # arrived before the clock was known
+                self._stamped.append((now, bytes(self._pending)))
+                self._pending.clear()
+
+    def set_ips(self, ips):
+        self.ips = ips
+        self._offset = None          # the mapping restarts at the new rate
+
+    def _track(self, done):
+        """Update the offset's upper envelope. -> host time now."""
+        now = time.monotonic()
+        sample = done - now * self.ips
+        if self._offset is None:
+            self._offset = sample
+        else:
+            sunk = self._offset - self.DECAY * (now - self._offset_t) * self.ips
+            self._offset = max(sample, sunk)
+        self._offset_t = now
+        return now
+
+    def _clock_slot(self, raw):
+        """-> where to put a MIDI clock byte whose arrival maps to `raw`.
+
+        Emulated senders tick in lumps: Gearmulator's MD makes its MIDI once
+        per audio block and sends it when the block is done, so its 0xF8s
+        measured 7.7 to 31 ms apart around a 19.7 ms mean, and a 24-tick
+        beat read 124.9 to 129.7 BPM. The Elektron firmware re-measures the
+        tempo every beat, so it showed all of that. Hardware clock followers
+        smooth their input; this does the same with an alpha-beta tracker:
+        each tick lands `PLL_PHASE` of the way from where it was expected to
+        where it came, and `PLL_FREQ` of the error trims the period, so the
+        tracker glides with a tempo that changes rather than snapping to it.
+        It starts over only after a pause (a gap over `MAX_TICK_S`) or when it
+        has lost the sender by more than `LOST_TICKS` ticks; a Start or
+        Continue re-anchors its phase (`transport`).
+        """
+        last, p, pred = self._clk_raw, self._clk_period, self._clk_pred
+        self._clk_raw = raw
+        gap = None if last is None else raw - last
+        if gap is None or not 0 < gap <= self.MAX_TICK_S * self.ips:
+            self._clk_period = self._clk_pred = None      # after a pause
+            return raw
+        if p is None:
+            self._clk_period, self._clk_pred = gap, raw + gap
+            return raw
+        if pred is None:                                   # re-anchored
+            self._clk_pred = raw + p
+            return raw
+        err = raw - pred
+        if abs(err) > self.LOST_TICKS * p:
+            self._clk_period, self._clk_pred = gap, raw + gap
+            return raw
+        slot = pred + self.PLL_PHASE * err
+        self._clk_period = p + self.PLL_FREQ * err
+        self._clk_pred = slot + self._clk_period
+        return slot
+
+    def _push(self, target, b):
+        self._seq += 1
+        heapq.heappush(self._queue, (target, self._seq, b))
+
+    def _schedule(self, done):
+        with self._lock:
+            stamped, self._stamped = self._stamped, collections.deque()
+        gap = self.BYTE_S * self.ips
+        for t, data in stamped:
+            target = (t + self.MARGIN_S) * self.ips + self._offset
+            for b in data:
+                if b >= 0xF8:
+                    # Realtime: it may fall between any two bytes on the wire,
+                    # so it skips the DIN chain. Clock takes its smoothed
+                    # slot; Start/Continue keep their own and re-anchor the
+                    # clock's phase, so the first tick after them -- which
+                    # arrived later -- can never be placed ahead of them.
+                    if b == 0xF8:
+                        slot = self._clock_slot(target)
+                    else:
+                        slot = target
+                        if b in (0xFA, 0xFB):
+                            self._clk_pred = None
+                    if slot < done:
+                        self.late += 1
+                        slot = done
+                    self._push(slot, b)
+                    continue
+                if self._last_target is not None:
+                    target = max(target, self._last_target + gap)
+                if target < done:
+                    self.late += 1
+                    target = done
+                self._push(target, b)
+                self._last_target = target
+
+    def step(self, done, remaining=None):
+        """longrun.spin: instructions until the next byte is due, or None."""
+        if self.m is None:
+            return None
+        self._track(done)
+        self._schedule(done)
+        if not self._queue:
+            return None
+        wait = int(self._queue[0][0] - done)
+        if wait > 0:
+            return wait
+        # Due but masked. Under the audio render, its rte ends the step and
+        # the byte goes in at the first boundary after (emu/pit.render_holds);
+        # polling every PENDING_STEP there cut a Digitone session into ~25,000
+        # extra steps and made it crackle.
+        if render_holds(self.m, done, interrupt_level(self.m, RX_VECTOR)):
+            return remaining
+        return PENDING_STEP
+
+    def service(self, done):
+        """longrun.spin: write the bytes now due and raise vector 156."""
+        if not self._queue or self._queue[0][0] > done:
+            return False
+        level = interrupt_level(self.m, RX_VECTOR)
+        sr = self.m.uc.reg_read(UC_M68K_REG_SR)
+        if level is None or ((sr >> 8) & 7) >= level:
+            self.deferred += 1      # masked: `step` retries on the next pass
+            return False
+        data = bytearray()
+        until = done + self.WINDOW_S * self.ips
+        while self._queue and self._queue[0][0] <= until:
+            data.append(heapq.heappop(self._queue)[2])
+        feed(self.m, data)
+        self.delivered += len(data)
+        if self.m.raise_vector(RX_VECTOR, level=level):
+            self.raised += 1
+            return True
+        return False
 
     def deliver(self, m):
         """Worker thread, between chunks. -> True if the vector was raised
