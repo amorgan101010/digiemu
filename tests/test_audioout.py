@@ -19,9 +19,9 @@ from emu import audioout
 
 DEVICE_TESTS = unittest.skipUnless(
     os.environ.get('DIGIEMU_AUDIO_DEVICE_TESTS') == '1'
-    and sys.platform in ('win32', 'darwin'),
+    and sys.platform in ('win32', 'darwin', 'linux'),
     'plays through the default output: set DIGIEMU_AUDIO_DEVICE_TESTS=1 '
-    '(Windows or macOS)')
+    '(Windows, macOS or Linux)')
 
 
 def _pcm(*samples):
@@ -101,15 +101,18 @@ class DeviceChoiceTest(unittest.TestCase):
         def fake(name):
             return lambda *a: made.append((name, a)) or name
         with mock.patch.object(audioout, '_WinMMOut', fake('winmm')), \
-                mock.patch.object(audioout, '_AudioQueueOut', fake('audioqueue')):
-            for platform, want in (('win32', 'winmm'), ('darwin', 'audioqueue')):
+                mock.patch.object(audioout, '_AudioQueueOut', fake('audioqueue')), \
+                mock.patch.object(audioout, '_PulseOut', fake('pulse')):
+            for platform, want in (('win32', 'winmm'), ('darwin', 'audioqueue'),
+                                   ('linux', 'pulse')):
                 with mock.patch.object(audioout.sys, 'platform', platform):
                     self.assertEqual(audioout.WaveOut(44100, 2), want)
         self.assertEqual(made, [('winmm', (44100, 2, 16, 20)),
-                                ('audioqueue', (44100, 2, 16, 20))])
+                                ('audioqueue', (44100, 2, 16, 20)),
+                                ('pulse', (44100, 2, 16, 20))])
 
     def test_other_platforms_have_no_device(self):
-        with mock.patch.object(audioout.sys, 'platform', 'linux'):
+        with mock.patch.object(audioout.sys, 'platform', 'sunos5'):
             with self.assertRaises(OSError):
                 audioout.WaveOut()
 

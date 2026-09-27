@@ -107,6 +107,10 @@ Model:Samples OS 1.13, SHA-256
   and picked by name, and the choice comes back on the next start. MIDI
   data in and out through a device, and a round trip through a loopback
   port, have not been tested on Windows yet.
+- **Linux, from source:** live audio goes through PulseAudio, or PipeWire's
+  pipewire-pulse (`libpulse-simple` through ctypes, `emu/audioout.py`).
+  Run on Arch with PipeWire. `DIGIEMU_PULSE_MS` sets the server's buffer
+  (21 ms): raise it on a graph whose quantum is 1024 frames.
 - **The app is unsigned**, and its Control Flow Guard flag is cleared,
   because Unicorn's `longjmp` fails under it.
 - **Digitone Keys.** The OS file is shared, but digiemu runs it as a plain
