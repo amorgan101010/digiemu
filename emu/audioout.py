@@ -5,7 +5,8 @@ transmit DMA moves: on Digitakt mk1, stereo pairs of big-endian 32-bit words.
 `frames_from_ssi` turns those into 16-bit little-endian stereo, and a player
 queues them to the host.
 
-`WaveOut` is Windows `winmm` through ctypes -- nothing to install. Elsewhere,
+`WaveOut` is Windows `winmm`, macOS AudioQueue or Linux libpulse-simple
+(PulseAudio or PipeWire) through ctypes -- nothing to install. Elsewhere,
 or when no device opens, `WavFile` records the same stream to a file so the
 output can still be checked by ear afterwards.
 
@@ -19,6 +20,7 @@ from __future__ import annotations
 import array
 import ctypes
 import ctypes.util
+import os
 import struct
 import sys
 import threading
@@ -352,6 +354,211 @@ class _AudioQueueOut:
             pass
 
 
+PA_SAMPLE_S16LE = 3
+PA_STREAM_PLAYBACK = 1
+PA_DEFAULT = 0xFFFFFFFF
+
+
+class _PaSampleSpec(ctypes.Structure):
+    _fields_ = [('format', ctypes.c_int),
+                ('rate', ctypes.c_uint32),
+                ('channels', ctypes.c_uint8)]
+
+
+class _PaBufferAttr(ctypes.Structure):
+    _fields_ = [('maxlength', ctypes.c_uint32),
+                ('tlength', ctypes.c_uint32),
+                ('prebuf', ctypes.c_uint32),
+                ('minreq', ctypes.c_uint32),
+                ('fragsize', ctypes.c_uint32)]
+
+
+class _PulseOut:
+    """Queue 16-bit stereo PCM to the default Linux output via libpulse-simple.
+
+    PipeWire serves the same API through pipewire-pulse. pa_simple_write
+    blocks, so a writer thread feeds the server from a queue of at most
+    `buffers` blocks; write() never waits on it, and a block that finds the
+    queue full is dropped, as with the other backends. The server is asked
+    to hold only a few blocks (tlength, at least two PipeWire quanta), so
+    queued() -- the blocks still here plus the one being written -- reaches
+    0 soon after the stream really runs dry. Only the writer thread touches
+    the pa_simple handle.
+
+    DIGIEMU_PULSE_MS overrides the server buffer (tlength) in milliseconds.
+    close() prints how low the server's buffer ran (pa_simple_get_latency
+    after each write), which is where a crackle this side of the server
+    shows up.
+    """
+
+    def __init__(self, rate=48000, channels=2, buffers=16, block_ms=20):
+        path = ctypes.util.find_library('pulse-simple') or 'libpulse-simple.so.0'
+        try:
+            self._lib = lib = ctypes.CDLL(path)
+            pa = ctypes.CDLL(ctypes.util.find_library('pulse')
+                             or 'libpulse.so.0')
+        except OSError as exc:
+            raise OSError('cannot load libpulse-simple: %s' % exc) from exc
+        pa.pa_strerror.restype = ctypes.c_char_p
+        pa.pa_strerror.argtypes = [ctypes.c_int]
+        lib.pa_simple_new.restype = ctypes.c_void_p
+        lib.pa_simple_new.argtypes = [
+            ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_char_p, ctypes.POINTER(_PaSampleSpec), ctypes.c_void_p,
+            ctypes.POINTER(_PaBufferAttr), ctypes.POINTER(ctypes.c_int)]
+        err_p = ctypes.POINTER(ctypes.c_int)
+        for name in ('pa_simple_drain', 'pa_simple_flush'):
+            getattr(lib, name).argtypes = [ctypes.c_void_p, err_p]
+        lib.pa_simple_write.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                        ctypes.c_size_t, err_p]
+        lib.pa_simple_free.argtypes = [ctypes.c_void_p]
+        lib.pa_simple_free.restype = None
+        lib.pa_simple_get_latency.argtypes = [ctypes.c_void_p, err_p]
+        lib.pa_simple_get_latency.restype = ctypes.c_uint64
+
+        self.rate, self.channels = rate, channels
+        self.gain = 1.0
+        self.frame = 2 * channels
+        self.block = max(self.frame, rate * block_ms // 1000 * self.frame)
+        self.buffers = buffers
+        self.dropped = 0
+        self.played = 0
+        self._pending = bytearray()
+        spec = _PaSampleSpec(PA_SAMPLE_S16LE, rate, channels)
+        # 1024 frames (~21 ms): two quanta of a 512-frame PipeWire graph.
+        # On a graph floored at 1024 that is one quantum, which underruns
+        # whenever the graph pulls late: set DIGIEMU_PULSE_MS=43 there.
+        self._tlength = max(2 * self.block, 1024 * self.frame)
+        try:
+            ms = int(os.environ.get('DIGIEMU_PULSE_MS', '0'))
+        except ValueError:
+            ms = 0
+        if ms > 0:
+            self._tlength = max(self.block, rate * ms // 1000 * self.frame)
+        self._lat_min = None        # lowest server latency seen, us
+        self._lat_low = 0           # writes that found it under one block
+        self._lat_n = 0
+        attr = _PaBufferAttr(PA_DEFAULT, self._tlength, PA_DEFAULT,
+                             PA_DEFAULT, PA_DEFAULT)
+        err = ctypes.c_int(0)
+        self._pa = lib.pa_simple_new(None, b'digiemu', PA_STREAM_PLAYBACK,
+                                     None, b'playback', ctypes.byref(spec),
+                                     None, ctypes.byref(attr),
+                                     ctypes.byref(err))
+        if not self._pa:
+            raise OSError('pa_simple_new failed: %s'
+                          % pa.pa_strerror(err.value).decode(errors='replace'))
+        self._queue = []
+        self._busy = False
+        self._server = (0, 0.0)     # (latency us, when) after the last write
+        self._closing = False
+        self._cond = threading.Condition()
+        self._thread = threading.Thread(target=self._writer, daemon=True,
+                                        name='digiemu-pulse')
+        self._thread.start()
+
+    def _writer(self):
+        err = ctypes.c_int(0)
+        while True:
+            with self._cond:
+                while not self._queue and not self._closing:
+                    self._cond.wait()
+                if self._closing:
+                    return
+                chunk = self._queue.pop(0)
+                self._busy = True
+            self._lib.pa_simple_write(self._pa, chunk, len(chunk),
+                                      ctypes.byref(err))
+            lat = self._lib.pa_simple_get_latency(self._pa, ctypes.byref(err))
+            if self._lat_n > 10:        # past the stream's start-up
+                if self._lat_min is None or lat < self._lat_min:
+                    self._lat_min = lat
+                if lat * self.rate * self.frame < self.block * 1_000_000:
+                    self._lat_low += 1
+            self._lat_n += 1
+            with self._cond:
+                self._busy = False
+                self._server = (lat, time.monotonic())
+                self._cond.notify_all()
+
+    def queued(self):
+        """Blocks handed to the device and not yet played: the ones still
+        here, and what the server held at the last write, counted down in
+        real time since. Leaving the server's out made a stream that had
+        just moved everything to the server look dry, and the caller then
+        queued a second cushion on top of it -- as latency."""
+        with self._cond:
+            n = len(self._queue) + self._busy
+            lat_us, at = self._server
+        left = lat_us / 1e6 - (time.monotonic() - at)
+        if left > 0:
+            n += int(left * self.rate * self.frame // self.block)
+        return n
+
+    def write(self, pcm, block=False, abort=None):
+        """Append 16-bit LE PCM; full blocks go to the device at once."""
+        pcm = apply_gain(pcm, self.gain)
+        self._pending += pcm
+        while len(self._pending) >= self.block:
+            if not self._submit(bytes(self._pending[:self.block]),
+                                block, abort):
+                return
+            del self._pending[:self.block]
+
+    def _submit(self, chunk, block, abort):
+        """Queue one full block. -> False if abandoned (abort)."""
+        with self._cond:
+            while len(self._queue) >= self.buffers and block:
+                if abort is not None and abort():
+                    return False
+                self._cond.wait(0.005)
+            if self._closing:
+                return False
+            if len(self._queue) >= self.buffers:
+                self.dropped += 1
+                return True
+            self._queue.append(chunk)
+            self._cond.notify_all()
+        self.played += 1
+        return True
+
+    def drain(self, abort=None):
+        """Send any partial block, then wait until everything has played."""
+        if self._pending:
+            tail = bytes(self._pending).ljust(self.block, b'\0')
+            self._pending = bytearray()
+            self._submit(tail, True, abort)
+        while self.queued():
+            if abort is not None and abort():
+                return
+            time.sleep(0.005)
+        # What the server still holds: at most tlength.
+        end = time.monotonic() + self._tlength / (self.rate * self.frame)
+        while time.monotonic() < end:
+            if abort is not None and abort():
+                return
+            time.sleep(0.005)
+
+    def close(self):
+        if self._pa is None:
+            return
+        with self._cond:
+            self._closing = True
+            self._queue.clear()
+            self._cond.notify_all()
+        self._thread.join()
+        if self._lat_n > 10:
+            print('[audio] pulse: tlength %d ms, %d writes, server buffer '
+                  'low %.1f ms, under one block %d times, dropped %d'
+                  % (self._tlength * 1000 // (self.rate * self.frame),
+                     self._lat_n, (self._lat_min or 0) / 1000,
+                     self._lat_low, self.dropped), flush=True)
+        err = ctypes.c_int(0)
+        self._lib.pa_simple_flush(self._pa, ctypes.byref(err))
+        self._lib.pa_simple_free(self._pa)
+        self._pa = None
+
+
 class WaveOut:
     """Queue 16-bit stereo PCM to the default host output device."""
 
@@ -360,7 +567,9 @@ class WaveOut:
             return _WinMMOut(rate, channels, buffers, block_ms)
         if sys.platform == 'darwin':
             return _AudioQueueOut(rate, channels, buffers, block_ms)
-        raise OSError('WaveOut needs Windows or macOS')
+        if sys.platform.startswith('linux'):
+            return _PulseOut(rate, channels, buffers, block_ms)
+        raise OSError('WaveOut needs Windows, macOS or Linux (PulseAudio/PipeWire)')
 
 
 class WavFile:

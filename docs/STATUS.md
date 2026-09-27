@@ -89,6 +89,10 @@ Digitone mk1 OS 1.43, SHA-256
 - **macOS, from source:** live audio goes through AudioQueue
   (`emu/audioout.py`, contributed in PR #4). It has not been run here, and
   CI has no macOS job.
+- **Linux, from source:** live audio goes through PulseAudio, or PipeWire's
+  pipewire-pulse (`libpulse-simple` through ctypes, `emu/audioout.py`).
+  Run on Arch with PipeWire. `DIGIEMU_PULSE_MS` sets the server's buffer
+  (21 ms): raise it on a graph whose quantum is 1024 frames.
 - **The app is unsigned**, and its Control Flow Guard flag is cleared,
   because Unicorn's `longjmp` fails under it.
 - **Digitone Keys.** The OS file is shared, but digiemu runs it as a plain
