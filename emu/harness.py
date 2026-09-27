@@ -67,6 +67,11 @@ SRTRAP_SLOTS  = 9
 SRTRAP_EXIT   = 30                # the trailing nop, hooked to set PC
 SRTRAP_FRAME  = 12                # bytes pushed: 4 scratch + 8 frame
 VBR = 0x40000000            # m68k vector table; MAIN OS loads at VBR+0x400
+# ColdFire CPU faults, logged when taken (install_exceptions)
+CPU_FAULTS = {2: 'access error', 3: 'address error', 4: 'illegal instruction',
+              5: 'divide by zero', 8: 'privilege violation', 9: 'trace',
+              10: 'line-A', 11: 'line-F', 12: 'debug interrupt',
+              14: 'format error'}
 
 
 _NATIVE_FF1 = {}
@@ -533,6 +538,14 @@ class Machine:
                 uc.reg_write(UC_M68K_REG_PC, pc)
                 uc.reg_write(UC_M68K_REG_A7, sp + 8)
                 return
+            if 2 <= vec <= 15:
+                # A CPU fault. The firmware's handler draws its EXCEPTION
+                # screen and halts, which only shows up as `unhandled vector
+                # 257` after the halt: say what it was, and where, first.
+                print('[cpu] exception vector %d (%s) at pc=%#010x sp=%#010x'
+                      % (vec, CPU_FAULTS.get(vec, 'fault'),
+                         uc.reg_read(UC_M68K_REG_PC),
+                         uc.reg_read(UC_M68K_REG_A7)), flush=True)
             # A synchronous `trap #N` must resume *after* the trap, so let
             # raise_vector advance the pushed PC past it. Asynchronous
             # injections (the timer tick) keep the interrupted PC.

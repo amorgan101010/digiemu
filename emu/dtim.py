@@ -60,7 +60,7 @@ import collections
 import math
 import struct
 
-from unicorn import UC_HOOK_MEM_WRITE
+from unicorn import UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE
 from unicorn.m68k_const import UC_M68K_REG_SR
 
 from emu.pit import (F_BUS, ICR_BASE, IDLE_STEP, IMR_BASE, INSTR_PER_SEC,
@@ -149,6 +149,48 @@ class Dtims:
             m.uc.hook_add(UC_HOOK_MEM_WRITE,
                           (lambda c: lambda uc, t, a, s, v, d: self.arm.add(c))(ch),
                           begin=b, end=b + 0x0F)
+
+        # The instruction count at the last step or service: guest time.
+        self.clock = 0
+        for ch in range(4):
+            m.uc.hook_add(UC_HOOK_MEM_READ,
+                          (lambda c: lambda uc, t, a, s, v, d: self._serve_count(c))(ch),
+                          begin=BASES[ch] + DTCN, end=BASES[ch] + DTCN + 3)
+
+    def _serve_count(self, ch):
+        """Put DTCNn's value in place just before the firmware reads it.
+
+        The firmware timestamps things with DTIM0's counter: its MIDI clock
+        input reads DTCN0 on every clock byte, sums the gaps over 24 clocks
+        and divides by that sum (0x400d4464..0x400d4606 on Digitakt 1.53).
+        A counter that never moves makes the sum 0 -- a divide-by-zero, the
+        firmware's EXCEPTION screen and a halt on the first beat of incoming
+        clock. Nothing in the OS image programs DTMR0, so the boot ROM must
+        leave it counting; the tempo arithmetic (0x6EA42090 / (sum >> 9),
+        clamped to 30..300 BPM in 1/120 BPM) only fits a count at the bus
+        clock. So a DTIM0 still in reset counts at F_BUS; a timer the
+        firmware did program counts at its own prescaler and clock, and
+        restarts at DTRR when FRR is set.
+
+        Resolution is a step boundary (see ARM_STEP), which is fine for
+        timing events milliseconds apart.
+        """
+        raw = mem_reader(self.m)(BASES[ch] + DTMR, 8)
+        dtmr, _dtxmr, _dter, dtrr = struct.unpack('>HBBI', raw)
+        if dtmr & RST:
+            clk = (dtmr >> 1) & 0x03
+            if clk not in (1, 2):             # stopped, or an external pin
+                return
+            div = (((dtmr >> 8) & 0xFF) + 1) * (1 if clk == 1 else 16)
+        elif ch == 0 and dtmr == 0:
+            div = 1                           # as the boot ROM leaves it
+        else:
+            return
+        count = int(self.clock / self.ips * F_BUS / div)
+        if dtmr & RST and dtmr & FRR:
+            count %= dtrr + 1
+        self.m.uc.mem_write(BASES[ch] + DTCN,
+                            struct.pack('>I', count & 0xFFFFFFFF))
 
     def clear_stale(self):
         """Stop any timer a snapshot left armed. -> the channels stopped.
@@ -280,6 +322,7 @@ class Dtims:
 
     def step(self, done, remaining=None):
         """-> instructions to run before the next `service` call is due."""
+        self.clock = done
         d = self.deadline(done)
         try:
             n = IDLE_STEP if d is None else max(1, int(math.ceil(d - done)))
@@ -299,6 +342,7 @@ class Dtims:
 
     def service(self, done):
         """Call at a chunk boundary with the instruction count so far."""
+        self.clock = done
         if self.held:
             return
         if _nothing_due(self, done):
