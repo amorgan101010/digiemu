@@ -147,7 +147,13 @@ def _validate_timer_source(state):
         for value in state["next"]
     ):
         raise RuntimeError("invalid timer checkpoint deadlines")
-    if not _is_int(state.get("now")) or type(state.get("held")) is not bool:
+    # `now` is the instruction count since boot, not a register: at 64M
+    # instructions a second it passes 2**32 about a minute in, so a session
+    # saved after that must still load.
+    if (
+        not _is_int(state.get("now"), 0, 2**64 - 1)
+        or type(state.get("held")) is not bool
+    ):
         raise RuntimeError("invalid timer checkpoint clock")
     for key in ("fired", "missed"):
         if not isinstance(state.get(key), dict) or any(
