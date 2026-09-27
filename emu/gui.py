@@ -345,6 +345,7 @@ class Emulator(threading.Thread):
         self.audio_live = False
         self.audio_muted = False
         self.live_underruns = 0
+        self.live_trimmed = 0       # chunks dropped to keep latency down
         self._live_out = None
         self._live_error = None
         self._live_started = False
@@ -1272,8 +1273,15 @@ class Emulator(threading.Thread):
             self._audio_t, self._audio_mark = now, self.audio_frames
 
     # Audio queued before live output starts, and again after it runs dry:
-    # it absorbs the pacing's jitter (a Windows sleep can be 15 ms).
-    LIVE_PREBUFFER_MS = 80
+    # it absorbs the pacing's jitter (a Windows sleep can be 15 ms). It is
+    # most of the latency from a key or a MIDI note to the speaker, and
+    # elsewhere the stream is smooth -- measured on Linux, a write every
+    # ~5 ms and never more than 9 ms apart -- so it is smaller there.
+    # DIGIEMU_AUDIO_MS overrides it.
+    LIVE_PREBUFFER_MS = int(os.environ.get(
+        'DIGIEMU_AUDIO_MS', 80 if sys.platform == 'win32' else 25))
+    # How far past the cushion the queue may run before chunks are skipped.
+    LIVE_SLACK_MS = 25
 
     def _live_write(self, pcm):
         """Send freshly rendered audio to the host device (worker thread)."""
@@ -1294,6 +1302,13 @@ class Emulator(threading.Thread):
             # rather than dribbling out block by block.
             self._live_started = False
             self.live_underruns += 1
+        if (self._live_started and out.queued() * 10
+                > self.LIVE_PREBUFFER_MS + self.LIVE_SLACK_MS):
+            # Too far ahead: the emulator ran fast for a moment (catching up
+            # after a load or a stall) and the surplus would otherwise stay
+            # queued for good, as latency. Skip this chunk instead.
+            self.live_trimmed += 1
+            return
         self._live_buf += pcm
         if not self._live_started:
             need = self.audio_cfg['rate'] * 4 * self.LIVE_PREBUFFER_MS // 1000
@@ -1322,6 +1337,9 @@ class Emulator(threading.Thread):
     def _close_live(self):
         out, self._live_out = self._live_out, None
         if out is not None:
+            print('[gui] live audio: cushion %d ms, %d underruns, %d chunks '
+                  'trimmed' % (self.LIVE_PREBUFFER_MS, self.live_underruns,
+                               self.live_trimmed), flush=True)
             try:
                 out.close()
             except Exception:                            # noqa: BLE001
