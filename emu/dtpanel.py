@@ -64,6 +64,8 @@ import argparse
 import json
 import math
 import os
+import re
+import subprocess
 import sys
 import time
 import tkinter as tk
@@ -87,6 +89,37 @@ def _midi_settings_path(snapshot):
         return os.path.join(folder, 'midi.json')
     return os.path.join(here, 'midi.json')
 
+_MONITOR = re.compile(r'^\s*\d+:\s*\+?(\*?)\S+\s+(\d+)/\d+x(\d+)/\d+'
+                      r'\+(-?\d+)\+(-?\d+)')
+def _monitors(text):
+    """-> [(primary, x, y, w, h)] from `xrandr --listmonitors` output."""
+    found = []
+    for line in text.splitlines():
+        m = _MONITOR.match(line)
+        if m:
+            w, h, x, y = (int(g) for g in m.groups()[1:])
+            found.append((m.group(1) == '*', x, y, w, h))
+    return found
+def _home_monitor(pointer=None):
+    """-> (x, y, w, h) of the monitor to open on: the primary one, else the
+    one under the pointer; None where xrandr is absent (Windows, macOS) or
+    says nothing useful."""
+    try:
+        text = subprocess.run(['xrandr', '--listmonitors'],
+                              capture_output=True, text=True,
+                              timeout=2).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    mons = _monitors(text)
+    for primary, x, y, w, h in mons:
+        if primary:
+            return x, y, w, h
+    if pointer:
+        px, py = pointer
+        for _, x, y, w, h in mons:
+            if x <= px < x + w and y <= py < y + h:
+                return x, y, w, h
+    return None
 SCALE = 4
 BG, FACE, EDGE = '#0b0d10', '#1c2027', '#2c323b'
 TEXT, DIM, AMBER = '#c9d3e0', '#6b7789', '#ffb638'
@@ -321,11 +354,18 @@ class DigitaktPanel(tk.Tk):
         # and at +4082+215 on the launch before that. A window you cannot find
         # is indistinguishable from one that never opened, which is exactly
         # how this was reported. Clamp it fully on-screen.
+        # On X11 the "screen" is the whole desktop across every monitor, so
         self.update_idletasks()
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         pw, ph = self.PANEL_W, self.PANEL_H
-        x = max(0, min(80, sw - pw))
-        y = max(0, min(60, sh - ph))
+        mon = _home_monitor(self.winfo_pointerxy())
+        if mon:
+            mx, my, mw, mh = mon
+            x = mx + max(0, (mw - pw) // 2)
+            y = my + max(0, (mh - ph) // 2)
+        else:
+            x = max(0, min(80, sw - pw))
+            y = max(0, min(60, sh - ph))
         self.geometry('%dx%d+%d+%d' % (pw, ph, x, y))
         print('[dtpanel] %s window %dx%d at +%d+%d on a %dx%d desktop'
               % (self.PRODUCT, pw, ph, x, y, sw, sh), flush=True)
@@ -405,7 +445,8 @@ class DigitaktPanel(tk.Tk):
         # Every product has the knob and MIDI; only the Digitakt has LOAD
         # SAMPLES.
         self._draw_master_volume()
-        x, w = 1000, 56
+        # MIDI and LOAD SAMPLES end at 1136, inside the header box (x+w =
+        x, w = 978, 56
         rect = self._rr(x, 30, w, 26, 6, fill=FACE, outline=EDGE)
         txt = c.create_text(x + w / 2, 43, text='MIDI', fill=TEXT,
                             font=('Helvetica', 9, 'bold'))
@@ -413,7 +454,7 @@ class DigitaktPanel(tk.Tk):
             c.tag_bind(item, '<Button-1>', lambda _e: self.midi_menu())
         if not self.SAMPLES:
             return
-        x, w = 1062, 94
+        x, w = 1040, 96
         rect = self._rr(x, 30, w, 26, 6, fill=FACE, outline=EDGE)
         txt = c.create_text(x + w / 2, 43, text='LOAD SAMPLES', fill=TEXT,
                             font=('Helvetica', 9, 'bold'))
