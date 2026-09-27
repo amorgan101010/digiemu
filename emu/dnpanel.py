@@ -28,7 +28,7 @@ voices with the effects and plays them as on the Digitakt.
 """
 import sys
 
-from emu import dtpanel
+from emu import dtpanel, panelkeys
 from emu.dtpanel import AMBER, PLAY_C, REC_C, DigitaktPanel
 
 # Firmware-independent label -> (x, y, w, h, secondary caption, tint): the
@@ -93,6 +93,7 @@ class DigitonePanel(DigitaktPanel):
     BUTTONS = BUTTONS
     ENCODERS = ENCODERS
     SAMPLES = False
+    KEYS = panelkeys.DIGITONE
 
 
 def main(argv):

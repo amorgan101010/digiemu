@@ -21,6 +21,10 @@ click others, which is how chords like FUNC+SRC, or holding a trig while
 turning an encoder, are formed. Latched keys are drawn lit; "clear latched"
 or Escape releases them all.
 
+KEYBOARD. The computer keyboard plays the panel too, on the Monomachine /
+Machinedrum layout Gearmulator uses: see emu/panelkeys.py. Ctrl is FUNC,
+Shift latches until it is let go, Delete releases everything.
+
 AUDIO. With the accelerated Unicorn (patches/README.md) the firmware's
 render runs faster than real time and plays LIVE (MUTE silences it). Without
 it the emulator records at a slow audio clock and PLAY plays the recording
@@ -64,7 +68,7 @@ import sys
 import time
 import tkinter as tk
 
-from emu import audioout, config
+from emu import audioout, config, panelkeys
 from emu.gui import ON, OFF, Emulator, H, W
 
 # RGB for each framebuffer byte value: zero is off, anything else on.
@@ -247,6 +251,7 @@ class DigitaktPanel(tk.Tk):
     PANEL_W, PANEL_H = PANEL_W, PANEL_H
     SCREEN_X, SCREEN_Y = SCREEN_X, SCREEN_Y
     SAMPLES = True                       # the LOAD SAMPLES button
+    KEYS = panelkeys.DIGITAKT            # computer key -> panel label
 
     def __init__(self, snapshot, syx=None, audio=True, save_on_exit=None,
                  app=False):
@@ -288,6 +293,11 @@ class DigitaktPanel(tk.Tk):
         self.draw_screen(bytearray(W * H))
 
         self.bind('<Escape>', lambda _e: self.clear_latched())
+        self.keyboard = panelkeys.Keyboard(self, self.KEYS)
+        self.bind('<KeyPress>', lambda e: self._key(e, True))
+        self.bind('<KeyRelease>', lambda e: self._key(e, False))
+        self.bind('<FocusOut>',
+                  lambda _e: self.after_idle(self._focus_check))
 
         # Closing the window has to stop the worker BEFORE the interpreter
         # tears down. The worker sits inside uc_emu_start; if the main thread
@@ -746,8 +756,11 @@ class DigitaktPanel(tk.Tk):
                            lambda e, k=code: self._drag(k, e))
 
     # ----------------------------------------------------------------- input
-    def press(self, code, event=None):
-        if event is not None and event.state & 0x0001:      # shift: latch
+    def press(self, code, event=None, latch=None):
+        """Hold a key down. A shift-click toggles its latch. `latch` is
+        the keyboard's (emu/panelkeys.py), which keeps its own: True draws
+        the key latched and holds it until release(code, force=True)."""
+        if latch is None and event is not None and event.state & 0x0001:
             if code in self.latched:
                 self.latched.discard(code)
                 self.held.discard(code)
@@ -757,13 +770,16 @@ class DigitaktPanel(tk.Tk):
                 self.held.add(code)
                 self.emu.inbox.append(('press', code, 0))
         else:
+            if latch:
+                self.latched.add(code)
             self.held.add(code)
             self.emu.inbox.append(('press', code, 0))
         self._paint(code)
 
-    def release(self, code):
-        if code in self.latched:        # a latched key ignores mouse-up
+    def release(self, code, force=False):
+        if code in self.latched and not force:  # latched: ignore mouse-up
             return
+        self.latched.discard(code)
         self.held.discard(code)
         self.emu.inbox.append(('release', code, 0))
         self._paint(code)
@@ -774,6 +790,33 @@ class DigitaktPanel(tk.Tk):
             self.held.discard(code)
             self.emu.inbox.append(('release', code, 0))
             self._paint(code)
+
+    def release_everything(self):
+        """Let go of every held and latched key, however it was held."""
+        codes = list(self.held)
+        self.held.clear()
+        self.latched.clear()
+        self.emu.inbox.append(('release_all', 0, 0))
+        for code in codes:
+            self._paint(code)
+
+    def _key(self, event, down):
+        if not self._named:
+            return None
+        if self.keyboard.key(down, event.keysym, event.keycode, event.state):
+            return 'break'
+        return None
+
+    def _focus_check(self):
+        """Focus left the panel window: its key-ups will go elsewhere, so
+        let go of what the keyboard holds."""
+        try:
+            widget = self.focus_get()
+            here = widget is not None and widget.winfo_toplevel() is self
+        except (KeyError, tk.TclError):
+            here = False
+        if not here:
+            self.keyboard.focus_lost()
 
     def _drag_start(self, code, event):
         self._drag_y = event.y
@@ -1167,7 +1210,8 @@ class DigitaktPanel(tk.Tk):
         held = ', '.join(sorted(self.codes and
                                 [n for n, c in self.codes.items()
                                  if c in self.held] or [])) or '-'
-        text = 'held: %s      (shift-click latches, Esc clears)' % held
+        text = ('held: %s      (shift-click latches, Esc clears, '
+                'Del releases all)' % held)
         if emu.device_error:
             text += '      no controls: ' + _first_line(emu.device_error, 90)
         self.canvas.itemconfigure(self.status, text=text, fill=DIM)
