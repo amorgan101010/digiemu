@@ -50,6 +50,12 @@ after the product, for a DAW. The MIDI button picks a device to take input
 from and one to send to as well; the choice is kept in midi.json in the
 firmware's folder and made again on the next start.
 
+REMOTE serves the panel to a browser on the local network (emu/remote.py):
+the layout this window placed, the live screen and the LEDs, played with
+multitouch. It starts with the window; clicking it turns it off, and that
+choice is kept in remote.json beside midi.json until it is clicked on
+again. The address is shown under the button.
+
 FAILURES are shown, not swallowed: a snapshot that will not open, an
 unrecognised firmware, a halt -- the emulator's `error` is drawn over the
 screen and on the status line, and main() says so in its return code. A
@@ -70,24 +76,25 @@ import sys
 import time
 import tkinter as tk
 
-from emu import audioout, config, panelkeys
+from emu import audioout, config, panelkeys, remote
 from emu.gui import ON, OFF, Emulator, H, W
 
 # RGB for each framebuffer byte value: zero is off, anything else on.
 _PIXEL = [ON if v else OFF for v in range(256)]
 
 
-def _midi_settings_path(snapshot):
-    """-> where the MIDI menu's choice is kept: the firmware's folder under
-    the portable app (firmware/<name>/snapshots/<build>/x.snap), else next
-    to the snapshot."""
+def _midi_settings_path(snapshot, name='midi.json'):
+    """-> where the MIDI menu's choice (or another panel setting, `name`)
+    is kept: the firmware's folder under the portable app
+    (firmware/<name>/snapshots/<build>/x.snap), else next to the
+    snapshot."""
     if not snapshot:
         return None
     here = os.path.dirname(os.path.abspath(snapshot))
     folder = os.path.dirname(os.path.dirname(here))
     if os.path.isfile(os.path.join(folder, 'firmware.json')):
-        return os.path.join(folder, 'midi.json')
-    return os.path.join(here, 'midi.json')
+        return os.path.join(folder, name)
+    return os.path.join(here, name)
 
 _MONITOR = re.compile(r'^\s*\d+:\s*\+?(\*?)\S+\s+(\d+)/\d+x(\d+)/\d+'
                       r'\+(-?\d+)\+(-?\d+)')
@@ -285,6 +292,7 @@ class DigitaktPanel(tk.Tk):
     SCREEN_X, SCREEN_Y = SCREEN_X, SCREEN_Y
     SAMPLES = True                       # the LOAD SAMPLES button
     KEYS = panelkeys.DIGITAKT            # computer key -> panel label
+    REMOTE_PORT = 8794                   # REMOTE's first port (emu/remote.py)
 
     def __init__(self, snapshot, syx=None, audio=True, save_on_exit=None,
                  app=False):
@@ -318,6 +326,10 @@ class DigitaktPanel(tk.Tk):
         self.led_of = {}         # button code -> LED id
         self.page_items = []     # (LED id, oval) for the pattern-page LEDs
         self._leds = {}          # LED id -> (r, g, b), as last drawn
+        self.layout = []         # every control placed, for emu/remote.py
+        self.remote_layout = None
+        self.remote = None       # emu.remote.RemotePanel while REMOTE is on
+        self._remote_json = _midi_settings_path(snapshot, 'remote.json')
         self._led_version = -1
 
         self.screen = tk.PhotoImage(width=W, height=H)
@@ -379,6 +391,9 @@ class DigitaktPanel(tk.Tk):
             pass
 
         self.emu.start()
+        # On unless switched off: as Gearmulator's MD/MM remote panel is.
+        if self._remote_saved().get('enabled', True):
+            self.remote_toggle(save=False)
         self.after(50, self.tick)
 
     # ---------------------------------------------------------------- chrome
@@ -452,6 +467,15 @@ class DigitaktPanel(tk.Tk):
                             font=('Helvetica', 9, 'bold'))
         for item in (rect, txt):
             c.tag_bind(item, '<Button-1>', lambda _e: self.midi_menu())
+        x, w = 630, 66
+        rect = self._rr(x, 30, w, 26, 6, fill=FACE, outline=EDGE)
+        txt = c.create_text(x + w / 2, 43, text='REMOTE', fill=TEXT,
+                            font=('Helvetica', 9, 'bold'))
+        for item in (rect, txt):
+            c.tag_bind(item, '<Button-1>', lambda _e: self.remote_toggle())
+        self.remote_btn = (rect, txt)
+        self.remote_text = c.create_text(x + w, 64, text='', fill=AMBER,
+                                         font=('Helvetica', 9), anchor='e')
         if not self.SAMPLES:
             return
         x, w = 1040, 96
@@ -729,6 +753,9 @@ class DigitaktPanel(tk.Tk):
                               font=('Helvetica', 8))
             self.items[code] = (rect, txt)
             self.text_fill[code] = tint or TEXT
+            self.layout.append({'k': 'b', 'code': code, 'label': label,
+                                'x': x, 'y': y, 'w': w, 'h': h, 'sub': sub,
+                                'tint': tint})
             self._bind_button(rect, code)
             self._bind_button(txt, code)
 
@@ -744,6 +771,9 @@ class DigitaktPanel(tk.Tk):
                                 font=('Helvetica', 8))
             self.items[code] = (rect, txt)
             self.text_fill[code] = TEXT
+            self.layout.append({'k': 'b', 'code': code, 'label': label,
+                                'x': x, 'y': y, 'w': 102, 'h': 30,
+                                'sub': None, 'tint': None})
             self._bind_button(rect, code)
             self._bind_button(txt, code)
 
@@ -760,6 +790,7 @@ class DigitaktPanel(tk.Tk):
             dot = c.create_oval(cx - 5, cy - 5, cx + 5, cy + 5,
                                 fill=LED_OFF, outline=EDGE)
             self.page_items.append((led, dot))
+            self.layout.append({'k': 'd', 'led': led, 'x': cx, 'y': cy})
         self._led_version = -1
 
         for label, code in self.enc_codes.items():
@@ -774,6 +805,8 @@ class DigitaktPanel(tk.Tk):
             # carries the firmware's own name for it, so drawing one too
             # would print it twice.
             self.enc_items[code] = [ring, mark, 0.0]
+            self.layout.append({'k': 'e', 'code': code, 'label': label,
+                                'x': x, 'y': y, 'r': r})
             for item in (ring, mark):
                 # Tk reports the wheel differently per platform: a signed
                 # delta on Windows and macOS, buttons 4 and 5 on X11. A
@@ -795,6 +828,89 @@ class DigitaktPanel(tk.Tk):
                            lambda e, k=code: self._drag_start(k, e))
                 c.tag_bind(item, '<B1-Motion>',
                            lambda e, k=code: self._drag(k, e))
+        self.remote_layout = self._remote_layout()
+    def _remote_layout(self):
+        """-> what emu/remote.py serves: every control as placed above, the
+        OLED's place, and the LEDs in the order its state frames carry
+        them. A key's 'led' is an index into that order."""
+        leds = sorted(set(self.led_of.values())
+                      | {c['led'] for c in self.layout if c['k'] == 'd'})
+        index = {led: i for i, led in enumerate(leds)}
+        controls = []
+        for c in self.layout:
+            c = dict(c)
+            if c['k'] == 'b':
+                c['led'] = index.get(self.led_of.get(c['code']))
+            elif c['k'] == 'd':
+                c['led'] = index[c['led']]
+            else:                    # tap a knob on the page to push it
+                c['push'] = self.codes.get(c['label'])
+            controls.append(c)
+        sx, sy = self.SCREEN_X, self.SCREEN_Y
+        boxes = [(sx - 16, sy - 16, sx + W * SCALE + 16,
+                  sy + H * SCALE + 16)]
+        for c in controls:
+            if c['k'] == 'b':
+                boxes.append((c['x'], c['y'], c['x'] + c['w'],
+                              c['y'] + c['h'] + (18 if c['sub'] else 0)))
+            elif c['k'] == 'e':
+                boxes.append((c['x'] - c['r'], c['y'] - c['r'],
+                              c['x'] + c['r'], c['y'] + c['r']))
+            else:
+                boxes.append((c['x'] - 5, c['y'] - 5, c['x'] + 5, c['y'] + 5))
+        x0 = min(b[0] for b in boxes) - 16
+        y0 = min(b[1] for b in boxes) - 16
+        x1 = max(b[2] for b in boxes) + 16
+        y1 = max(b[3] for b in boxes) + 16
+        return {'product': self.PRODUCT, 'controls': controls, 'leds': leds,
+                'screen': {'x': sx, 'y': sy, 'w': W * SCALE, 'h': H * SCALE},
+                'bounds': [x0, y0, x1 - x0, y1 - y0]}
+    def _remote_saved(self):
+        """-> remote.json's settings: {'enabled': bool, 'port': int}."""
+        try:
+            with open(self._remote_json) as f:
+                saved = json.load(f)
+            return saved if isinstance(saved, dict) else {}
+        except (OSError, TypeError, ValueError):
+            return {}
+    def remote_toggle(self, save=True):
+        """REMOTE: serve the panel to browsers on the network, or stop."""
+        saved = self._remote_saved()
+        if self.remote is not None:
+            self.remote.stop()
+            self.remote = None
+            print('[remote] stopped', flush=True)
+        else:
+            port = saved.get('port', self.REMOTE_PORT)
+            server = remote.RemotePanel(self.emu, lambda: self.remote_layout,
+                                        port if isinstance(port, int)
+                                        else self.REMOTE_PORT, self.PRODUCT)
+            if server.start():
+                self.remote = server
+                print('[remote] %s panel at %s' % (self.PRODUCT, server.url),
+                      flush=True)
+            else:
+                # Short: the status line runs toward the REMOTE button.
+                print('[remote] no free port from %d: %s'
+                      % (server.first_port, server.error), flush=True)
+                self._note('REMOTE: ports %d-%d busy' % (
+                    server.first_port,
+                    server.first_port + remote.PORTS_TRIED - 1), 8.0)
+        self._paint_remote()
+        if save and self._remote_json:
+            saved['enabled'] = self.remote is not None
+            try:
+                with open(self._remote_json, 'w') as f:
+                    json.dump(saved, f)
+            except OSError as exc:
+                self._note('REMOTE setting not saved: %s' % exc)
+    def _paint_remote(self):
+        rect, txt = self.remote_btn
+        on = self.remote is not None
+        self.canvas.itemconfigure(rect, fill=LIT if on else FACE,
+                                  outline=AMBER if on else EDGE)
+        self.canvas.itemconfigure(self.remote_text,
+                                  text=self.remote.url if on else '')
 
     # ----------------------------------------------------------------- input
     def press(self, code, event=None, latch=None):
@@ -1072,6 +1188,9 @@ class DigitaktPanel(tk.Tk):
         player = getattr(self, 'player', None)
         if player is not None:
             player.stop()
+        server, self.remote = getattr(self, 'remote', None), None
+        if server is not None:
+            server.stop()
         emu = getattr(self, 'emu', None)
         self._stop_emulator(
             'saving the session -- this window closes when it is written'

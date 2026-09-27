@@ -94,6 +94,7 @@ class DigitonePanel(DigitaktPanel):
     ENCODERS = ENCODERS
     SAMPLES = False
     KEYS = panelkeys.DIGITONE
+    REMOTE_PORT = 8796
 
 
 def main(argv):

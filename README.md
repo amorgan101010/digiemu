@@ -48,6 +48,19 @@ time, and a PC with Smart App Control turned on blocks it.
   a DAW. The firmware's own MIDI CONFIG still applies: after setup, PORT
   CONFIG > INPUT FROM is USB only, so set it to MIDI (and OUTPUT TO, for
   MIDI out). From source this needs `uv sync --extra midi`.
+- **REMOTE:** plays the panel from a tablet or phone on the same network.
+  It starts with the window: open the address shown under the button in the
+  device's browser
+  (the first free port from 8794 for the Digitakt, 8796 for the Digitone).
+  The page has the same keys, the live screen and the key LEDs, with
+  multitouch: hold a trig and turn a knob for a parameter lock. Drag a knob
+  up or right to turn it, and tap it to push it. On an iPad, Safari's
+  *Add to Home Screen* opens it full screen. Click REMOTE to switch it off
+  (kept for next time). It has no password, so use it on a network you
+  trust; on Windows the first start may ask to let digiemu through the
+  firewall.
+  Master Volume is only in the window. A key held on the page is not shown
+  held in the window, and letting go of a key on either side releases it.
 - **LOAD SAMPLES** (Digitakt only): see below.
 
 Both windows share one plan: Master Volume and LEVEL/DATA at the top
