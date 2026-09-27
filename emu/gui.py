@@ -72,10 +72,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unicorn import UcError
 from unicorn.m68k_const import UC_M68K_REG_A7, UC_M68K_REG_PC, UC_M68K_REG_SR
-from emu.longrun import build, spin
+from emu.longrun import build, never_fake_set_posts, spin
 from emu.dtim import Dtims, Timers
 from emu import (audioout, config, device as devices, edma_sw, intfrc,
-                 native, panel, panelin, panelleds, symbols)
+                 midi, native, panel, panelin, panelleds, symbols)
 from emu.pit import INSTR_PER_SEC, Pits, intro_running
 from emu.screen import png
 from emu.snapshot import _SnapshotUnpickler, save as save_snapshot
@@ -316,8 +316,26 @@ class Emulator(threading.Thread):
                  patch_eighth=7, patch_machine_spec=None,
                  panel_dwell=PANEL_DWELL_MS, ips_at=(),
                  post_intro_ips=4 * INSTR_PER_SEC, audio=True,
-                 save_on_exit=None):
+                 save_on_exit=None, midi_name=None):
         super().__init__()
+        # MIDI in through the DIN port (emu/midi.py): host messages queue
+        # here and reach the guest between chunks, like panel input.
+        self.midi_in = midi.MidiIn()
+        # The host side (virtual ports, and the devices the panel's MIDI
+        # menu picks); MIDI out sends what the firmware writes to UART9.
+        self.midi_host = None
+        self.midi_out = None
+        self.midi_error = None
+        if midi_name:
+            try:
+                self.midi_host = midi.HostMidi(midi_name, self.midi_in.put)
+                self.midi_out = midi.MidiOut(self.midi_host.send)
+                print('[midi] ports: %s' % midi_name, flush=True)
+                for problem in self.midi_host.problems:
+                    print('[midi] %s' % problem, flush=True)
+            except OSError as exc:
+                self.midi_error = str(exc)
+                print('[midi] no MIDI: %s' % exc, flush=True)
         self.snapshot = snapshot
         self.save_on_exit = save_on_exit
         self.saved = None
@@ -559,6 +577,7 @@ class Emulator(threading.Thread):
             print('[gui] EMULATOR STOPPED: %s' % self.error, flush=True)
             traceback.print_exc(file=sys.stdout)
             self._close_live()
+            self._close_midi()
         finally:
             self.ready.set()
 
@@ -757,6 +776,10 @@ class Emulator(threading.Thread):
                     dsp.start_thread()
             else:
                 self.audio_live = False
+            # After the DSP's attach_dma: MidiOut chains onto the same SSRT
+            # hooks for eDMA channel 37.
+            if self.midi_out is not None:
+                self.midi_out.install(m, ev.get('edma_sw_bank'))
             if self.patch_machine:
                 sys.path.insert(0, os.path.join(os.path.dirname(
                     os.path.dirname(os.path.abspath(__file__))), 'tools'))
@@ -791,6 +814,9 @@ class Emulator(threading.Thread):
             profile = symbols.resolve(main_img)
             self.fb_front = profile.fb_front
             self.profile = profile
+            # A semaphore real code posts must stop being faked (the MIDI
+            # task's, once MIDI arrives): see never_fake_set_posts.
+            never_fake_set_posts(m, ev, profile.set_post)
             self._identify_device(m, profile)
         except SETUP_ERRORS as exc:                    # noqa: BLE001
             self.error = self._describe_failure(exc)
@@ -1023,6 +1049,9 @@ class Emulator(threading.Thread):
                 print('[gui] ips -> %d at %d' % (n, self.stats['instrs']),
                       flush=True)
             pc = self._drain_input(m, profile, pc)
+            if self.midi_in.deliver(m) or (
+                    self.midi_out is not None and self.midi_out.deliver(m)):
+                pc = m.uc.reg_read(UC_M68K_REG_PC)
             # A chunk of about 5 emulated ms: BUDGET instructions is that at
             # the stock rate, but a fraction of it once audio raises the rate.
             budget = max(BUDGET, pits.sources[0].ips // 200)
@@ -1095,6 +1124,7 @@ class Emulator(threading.Thread):
         if dsp is not None:
             dsp.close()
         self._close_live()
+        self._close_midi()
         n_seen = len(m.fault_pages)
         n_kept = len(m.faults)
         capped = ' (truncated at max_fault_records)' if n_kept < n_seen else ''
@@ -1317,6 +1347,25 @@ class Emulator(threading.Thread):
     def live_latency_ms(self):
         out = self._live_out
         return 0 if out is None else out.queued() * 10
+
+    def _close_midi(self):
+        host, self.midi_host = self.midi_host, None
+        if host is not None:
+            try:
+                host.close()
+            except Exception:                            # noqa: BLE001
+                pass
+        mo = self.midi_out
+        if mo is not None and mo.sent:
+            print('[midi] out: %d bytes sent (%d written directly, %d DMA '
+                  'runs), vectors %s' % (mo.sent, mo.direct, mo.dma_runs,
+                                          mo.raised), flush=True)
+        mi = self.midi_in
+        if mi.received:
+            print('[midi] in: %d bytes received, %d delivered, vector taken '
+                  '%d times, %d boundaries deferred'
+                  % (mi.received, mi.delivered, mi.raised, mi.deferred),
+                  flush=True)
 
     def _close_live(self):
         out, self._live_out = self._live_out, None
