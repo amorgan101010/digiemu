@@ -14,6 +14,7 @@ from emu.pit import Pits
 from emu.snapshot import (
     DeferredComponentRestore,
     _restore_component,
+    _validate_component_state,
     _validate_manifest,
     restore_into,
     save,
@@ -78,6 +79,17 @@ class CheckpointStateTest(unittest.TestCase):
         restored.restore_checkpoint_state(original.checkpoint_state())
         self.assertEqual(restored.checkpoint_state(), original.checkpoint_state())
 
+    def test_timer_clock_past_32_bits_validates(self):
+        pit = Pits.__new__(Pits)
+        pit.channels, pit.ips = (3, 2, 0), 64000000
+        pit.next, pit.now, pit.held = [None] * 4, 8661255235, False
+        pit.fired, pit.missed = collections.Counter(), collections.Counter()
+        pit.pending = set()
+        _validate_component_state(pit.checkpoint_state(), "timers")
+        state = pit.checkpoint_state()
+        state["now"] = -1
+        with self.assertRaisesRegex(RuntimeError, "clock"):
+            _validate_component_state(state, "timers")
     def test_timers_restores_source_order_and_rejects_mismatch(self):
         pit = Pits.__new__(Pits)
         pit.channels, pit.ips, pit.next, pit.now, pit.held = (
