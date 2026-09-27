@@ -1066,6 +1066,34 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None,
     return pc, done, stop
 
 
+def never_fake_set_posts(m, ev, addr):
+    """Stop `unblock` faking a semaphore once real code posts it through
+    the RTOS's set-post routine at `addr` (the profile's `set_post`; see
+    emu/symbols.py). -> `addr`, or None when there is nothing to hook.
+
+    semscan's rule applied at run time: a semaphore whose poster runs here
+    must not be faked. semscan knows only give/give_b, and set-post's
+    callers take the semaphore from an object field, so no static scan can
+    see them. The MIDI task's is the one that bit: its pend was forced
+    through on every pass once a real message had woken it, so the task
+    spun at its priority and starved the UI, which looked like a freeze --
+    and a session saved then kept spinning when resumed.
+    """
+    skip = ev.get('unblock_skip')
+    if skip is None or addr is None:
+        return None
+    seen = ev.setdefault('never_fake_seen', set())
+
+    def posted(uc, address, size, data):
+        sp = uc.reg_read(UC_M68K_REG_A7)
+        sem = struct.unpack('>I', uc.mem_read(sp + 4, 4))[0]
+        if sem not in skip:
+            skip.add(sem)
+            seen.add(sem)
+    m.uc.hook_add(UC_HOOK_CODE, posted, begin=addr, end=addr)
+    return addr
+
+
 def main(snapshot, instrs, chunk=500_000, send=b'', unblock=False, fast=False):
     m, ev, st, pc, inq, at = build(snapshot, send, unblock=unblock,
                                    softfloat=fast, bitmap=fast)

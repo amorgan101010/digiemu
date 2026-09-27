@@ -12,6 +12,11 @@ dependencies = [
     "pypcode==4.0.0",
 ]
 
+[project.optional-dependencies]
+midi = [
+    "python-rtmidi>=1.5.8",
+]
+
 # Pinned to 3.12 deliberately. On 3.14 (the Homebrew default here) binary
 # wheels are still thin -- pygame, for one, resolves to an sdist and has to
 # compile -- and Homebrew's python@3.14 has no tkinter at all. uv's managed

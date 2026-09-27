@@ -99,8 +99,10 @@ Digitone mk1 OS 1.43, SHA-256
   Digitone (boot argument bit 19 clear): no keyboard, wheels or Keys-only
   keys.
 - **Digitone details.** Two key LEDs (PAGE, FUNC) come from the firmware's
-  table and have not been seen lit. MIDI, audio in and the DSP's FPGA are
-  not modelled beyond boot. Live DSP renders run on their own thread, so a
+  table and have not been seen lit. Audio in and the DSP's FPGA are not
+  modelled beyond boot. MIDI through the DIN port is (`emu/midi.py`, both
+  devices), but its bytes go out at once rather than at 31250 baud, and
+  input reaches the firmware at the emulator's chunk boundaries (~5 ms). Live DSP renders run on their own thread, so a
   live session is not instruction-for-instruction repeatable; batch runs
   are.
 - **Other devices.** The Digitakt II and Digitone II paths from upstream

@@ -42,6 +42,12 @@ time, and a PC with Smart App Control turned on blocks it.
   clip). The real knob is analog, so the firmware never sees it.
 - **Audio:** MUTE silences the live output. PLAY replays what has been
   recorded, CLEAR empties the recording, and SAVE WAV writes it to a file.
+- **MIDI:** the DIN MIDI IN and OUT ports. The MIDI button picks a device to
+  play from and one to send to, and the choice is kept for next time; on
+  Linux and macOS there are also virtual ports named after the device, for
+  a DAW. The firmware's own MIDI CONFIG still applies: after setup, PORT
+  CONFIG > INPUT FROM is USB only, so set it to MIDI (and OUTPUT TO, for
+  MIDI out). From source this needs `uv sync --extra midi`.
 - **LOAD SAMPLES** (Digitakt only): see below.
 
 Both windows share one plan: Master Volume and LEVEL/DATA at the top

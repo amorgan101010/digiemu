@@ -179,7 +179,9 @@ On the reference desktop, OS 1.43:
   behaviour, and the emulator passes 0. The Keys' extra controls (a 37-key
   keyboard on panel tags 5 and 6, the wheels on the main CPU's ADC, and codes
   55–72) are not in the device file or the window.
-- **MIDI, audio in and the FPGA** are not modelled beyond what boot needs.
+- **Audio in and the FPGA** are not modelled beyond what boot needs. MIDI
+  through the DIN port (UART9, eDMA channels 36 and 37) is: see
+  `emu/midi.py`.
 - **Two LEDs, PAGE (25) and FUNC (34),** come from the firmware's key/LED
   table and have not been seen lit.
 - **Live renders are not deterministic** with respect to the main CPU's

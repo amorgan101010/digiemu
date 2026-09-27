@@ -674,6 +674,13 @@ SYMBOLS = [
     # documented +0x2e4 mk1 RTOS shift. Each matches exactly once.
     ('give', Sig(H(40, '6-9,15-18,30-33', '26:674e2280', '389c44848f022fc59852e752d4e6c109'), hi=DATA_HI), False),
     ('give_b', Sig(H(40, '6-9,15-18,30-33', '26:673e2280', 'f311034e8e67abf926e1904faca0fc24'), hi=DATA_HI), False),
+    # The third post primitive: set a binary semaphore to 1 and wake its
+    # waiter, usually reached through an interrupts-masked wrapper. Its
+    # callers (the MIDI parser among them) take the semaphore from an object
+    # field, so semscan cannot see them; longrun.never_fake_set_posts hooks
+    # the routine instead. 0x40001632 on Digitone mk1 1.43, 0x400014d2 on
+    # Digitakt mk1 1.53; matches once in each.
+    ('set_post', Sig(H(16, '', '0:2f0a7001', '544618b15a3df3c590f5f9cd95dcf283'), hi=DATA_HI), False),
 
     # Every static call site into task_create -- diagnostic (dspboot logs
     # entry/prio/tcb at each), not required for boot.

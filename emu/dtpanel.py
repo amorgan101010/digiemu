@@ -41,6 +41,11 @@ panel returns SAMPLES_ADDED. Under the portable app (--app) the app then
 rebuilds from the cold boot (~15 s) and reopens the panel; run on its own,
 the snapshots have to be rebuilt by hand.
 
+MIDI. The DIN ports (emu/midi.py) appear as a virtual input and output named
+after the product, for a DAW. The MIDI button picks a device to take input
+from and one to send to as well; the choice is kept in midi.json in the
+firmware's folder and made again on the next start.
+
 FAILURES are shown, not swallowed: a snapshot that will not open, an
 unrecognised firmware, a halt -- the emulator's `error` is drawn over the
 screen and on the status line, and main() says so in its return code. A
@@ -52,6 +57,7 @@ again, and the portable app offers that instead of reporting a crash.
                                  [--save-on-exit PATH] [--no-audio] [--app]
 """
 import argparse
+import json
 import math
 import os
 import sys
@@ -63,6 +69,19 @@ from emu.gui import ON, OFF, Emulator, H, W
 
 # RGB for each framebuffer byte value: zero is off, anything else on.
 _PIXEL = [ON if v else OFF for v in range(256)]
+
+
+def _midi_settings_path(snapshot):
+    """-> where the MIDI menu's choice is kept: the firmware's folder under
+    the portable app (firmware/<name>/snapshots/<build>/x.snap), else next
+    to the snapshot."""
+    if not snapshot:
+        return None
+    here = os.path.dirname(os.path.abspath(snapshot))
+    folder = os.path.dirname(os.path.dirname(here))
+    if os.path.isfile(os.path.join(folder, 'firmware.json')):
+        return os.path.join(folder, 'midi.json')
+    return os.path.join(here, 'midi.json')
 
 SCALE = 4
 BG, FACE, EDGE = '#0b0d10', '#1c2027', '#2c323b'
@@ -242,7 +261,11 @@ class DigitaktPanel(tk.Tk):
         self.canvas.pack(fill='both', expand=True)
 
         self.emu = Emulator(snapshot, syx=syx, audio=audio,
-                            save_on_exit=save_on_exit)
+                            save_on_exit=save_on_exit,
+                            midi_name='%s (digiemu)' % self.PRODUCT)
+        self._midi_json = _midi_settings_path(snapshot)
+        self._midi_win = None
+        self._apply_saved_midi()
         self._error_shown = None          # the failure currently drawn
         self.player = audioout.Player()
         self._audio_note = ('', 0.0)     # (message, shown until)
@@ -369,11 +392,18 @@ class DigitaktPanel(tk.Tk):
             for item in (rect, txt):
                 c.tag_bind(item, '<Button-1>', lambda _e, f=fn: f())
             self.audio_btns[name] = (rect, txt)
-        # Every product has the knob; only the Digitakt has LOAD SAMPLES.
+        # Every product has the knob and MIDI; only the Digitakt has LOAD
+        # SAMPLES.
         self._draw_master_volume()
+        x, w = 1000, 56
+        rect = self._rr(x, 30, w, 26, 6, fill=FACE, outline=EDGE)
+        txt = c.create_text(x + w / 2, 43, text='MIDI', fill=TEXT,
+                            font=('Helvetica', 9, 'bold'))
+        for item in (rect, txt):
+            c.tag_bind(item, '<Button-1>', lambda _e: self.midi_menu())
         if not self.SAMPLES:
             return
-        x, w = 1000, 128
+        x, w = 1062, 94
         rect = self._rr(x, 30, w, 26, 6, fill=FACE, outline=EDGE)
         txt = c.create_text(x + w / 2, 43, text='LOAD SAMPLES', fill=TEXT,
                             font=('Helvetica', 9, 'bold'))
@@ -418,6 +448,100 @@ class DigitaktPanel(tk.Tk):
 
     def _note(self, msg, secs=4.0):
         self._audio_note = (msg, time.time() + secs)
+
+    # -- MIDI devices ------------------------------------------------------
+    def _apply_saved_midi(self):
+        """Connect the devices chosen last time, if they are plugged in."""
+        host = self.emu.midi_host
+        if host is None or not self._midi_json:
+            return
+        try:
+            with open(self._midi_json) as f:
+                saved = json.load(f)
+        except (OSError, ValueError):
+            return
+        for key, pick in (('input', host.set_input),
+                          ('output', host.set_output)):
+            name = saved.get(key)
+            if name:
+                try:
+                    pick(name)
+                    print('[midi] %s: %s' % (key, name), flush=True)
+                except OSError as exc:
+                    print('[midi] %s %r: %s' % (key, name, exc), flush=True)
+
+    def _save_midi(self):
+        host = self.emu.midi_host
+        if host is None or not self._midi_json:
+            return
+        try:
+            with open(self._midi_json, 'w') as f:
+                json.dump({'input': host.input, 'output': host.output}, f)
+        except OSError as exc:
+            self._note('MIDI choice not saved: %s' % exc)
+
+    def midi_menu(self):
+        """MIDI: a small window to pick the device input and output."""
+        host = self.emu.midi_host
+        if host is None:
+            self._note('MIDI is not available: %s'
+                       % (self.emu.midi_error or 'no MIDI ports'), 6.0)
+            return
+        if self._midi_win is not None and self._midi_win.winfo_exists():
+            self._midi_win.lift()
+            return
+        from tkinter import ttk
+        win = self._midi_win = tk.Toplevel(self)
+        win.title('%s MIDI' % self.PRODUCT)
+        win.configure(bg=BG, padx=14, pady=12)
+        win.transient(self)
+        win.resizable(False, False)
+        none = '(none)'
+        rows = {}
+
+        def refresh():
+            for key, (box, ports, current) in rows.items():
+                values = [none] + ports()
+                name = current()
+                if name and name not in values:
+                    values.append(name)             # chosen, now unplugged
+                box['values'] = values
+                box.set(name or none)
+
+        def chosen(key, pick):
+            box = rows[key][0]
+            name = box.get()
+            try:
+                pick(None if name == none else name)
+            except OSError as exc:
+                self._note('MIDI %s: %s' % (key, exc), 6.0)
+            refresh()
+            self._save_midi()
+
+        for row, (key, label, ports, pick, current) in enumerate((
+                ('input', 'MIDI IN from', host.inputs, host.set_input,
+                 lambda: host.input),
+                ('output', 'MIDI OUT to', host.outputs, host.set_output,
+                 lambda: host.output))):
+            tk.Label(win, text=label, bg=BG, fg=TEXT,
+                     font=('Helvetica', 10)).grid(row=row, column=0,
+                                                  sticky='w', pady=4)
+            box = ttk.Combobox(win, state='readonly', width=40)
+            box.grid(row=row, column=1, padx=(10, 0), pady=4)
+            box.bind('<<ComboboxSelected>>',
+                     lambda _e, k=key, p=pick: chosen(k, p))
+            rows[key] = (box, ports, current)
+        tk.Label(win, text="Also always there: the virtual ports '%s', "
+                           'for a DAW.' % host.name,
+                 bg=BG, fg=DIM, font=('Helvetica', 9)).grid(
+            row=2, column=0, columnspan=2, sticky='w', pady=(8, 0))
+        buttons = tk.Frame(win, bg=BG)
+        buttons.grid(row=3, column=0, columnspan=2, sticky='e', pady=(10, 0))
+        ttk.Button(buttons, text='Refresh', command=refresh).pack(
+            side='left', padx=(0, 6))
+        ttk.Button(buttons, text='Close', command=win.destroy).pack(
+            side='left')
+        refresh()
 
     def _recording(self):
         """The recording with its silent ends trimmed, or b''."""
