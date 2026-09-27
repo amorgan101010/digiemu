@@ -158,7 +158,8 @@ for live audio; the Digitone also uses most of a second core.
 
 You need Python 3.12 (with [uv](https://docs.astral.sh/uv/)), a C toolchain
 to build the patched Unicorn engine ([docs/UNICORN.md](docs/UNICORN.md)), and
-your own `.syx`. Tested on Windows 11 and on Linux (WSL2).
+your own `.syx`. Tested on Windows 11 and on Linux (WSL2, and Arch with
+PipeWire, where live audio goes through PulseAudio's API).
 
 ```sh
 uv sync
