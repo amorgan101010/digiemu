@@ -9,8 +9,8 @@ and the Monomachine does not sit on keys that layout leaves free, or on the
 nearest thing it has (` is the MM's bank-group key, BANK here).
 
 Holding a key holds the panel key. Shift LATCHES what you press until Shift
-is let go, as Gearmulator does; a mouse shift-click latch is separate and
-stays until Escape. Delete lets go of everything.
+is let go, as Gearmulator does; the panel window lets go of its mouse
+shift-click latches then too. Delete lets go of everything.
 
 Knobs: hold the knob's key and tap - or = to turn it one detent, or [ or ] to
 turn it with its push switch held (press-turn). Tapping the knob's key
@@ -258,11 +258,14 @@ class Keyboard:
             self.panel.release(self.push, force=True)
             self.push = None
 
-    def _release_latched(self):
-        still_held = {what for kind, what in self.held.values()
-                      if kind == 'button'}
+    def holding(self):
+        """-> the button codes keys are physically holding down now."""
+        codes = {what for kind, what in self.held.values() if kind == 'button'}
         if self.func is not None:
-            still_held.add(self.func)
+            codes.add(self.func)
+        return codes
+    def _release_latched(self):
+        still_held = self.holding()
         for code in list(self.latched):
             self.latched.discard(code)
             if code not in still_held:

@@ -18,8 +18,8 @@ and release events, so simultaneous presses are what the hardware natively
 expresses -- see emu/panelin.py. A plain click is momentary: press on down,
 release on up. Shift-click LATCHES, so the button stays asserted while you
 click others, which is how chords like FUNC+SRC, or holding a trig while
-turning an encoder, are formed. Latched keys are drawn lit; "clear latched"
-or Escape releases them all.
+turning an encoder, are formed. Latched keys are drawn lit; letting go of
+Shift, "clear latched" or Escape releases them all.
 
 KEYBOARD. The computer keyboard plays the panel too, on the Monomachine /
 Machinedrum layout Gearmulator uses: see emu/panelkeys.py. Ctrl is FUNC,
@@ -941,8 +941,10 @@ class DigitaktPanel(tk.Tk):
         self.emu.inbox.append(('release', code, 0))
         self._paint(code)
 
-    def clear_latched(self):
+    def clear_latched(self, keep=()):
         for code in list(self.latched):
+            if code in keep:
+                continue
             self.latched.discard(code)
             self.held.discard(code)
             self.emu.inbox.append(('release', code, 0))
@@ -960,9 +962,11 @@ class DigitaktPanel(tk.Tk):
     def _key(self, event, down):
         if not self._named:
             return None
-        if self.keyboard.key(down, event.keysym, event.keycode, event.state):
-            return 'break'
-        return None
+        used = self.keyboard.key(down, event.keysym, event.keycode,
+                                 event.state)
+        if not down and event.keysym in panelkeys.SHIFT_KEYS:
+            self.clear_latched(keep=self.keyboard.holding())
+        return 'break' if used else None
 
     def _focus_check(self):
         """Focus left the panel window: its key-ups will go elsewhere, so
@@ -1370,7 +1374,7 @@ class DigitaktPanel(tk.Tk):
         held = ', '.join(sorted(self.codes and
                                 [n for n, c in self.codes.items()
                                  if c in self.held] or [])) or '-'
-        text = ('held: %s      (shift-click latches, Esc clears, '
+        text = ('held: %s      (shift-click latches until Shift is up, '
                 'Del releases all)' % held)
         if emu.device_error:
             text += '      no controls: ' + _first_line(emu.device_error, 90)

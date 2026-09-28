@@ -179,6 +179,50 @@ class Keys(unittest.TestCase):
         self.assertEqual(self.panel.take(), [])
 
 
+class _Window:
+    """dtpanel.DigitaktPanel's input methods, without a Tk window."""
+    press = dtpanel.DigitaktPanel.press
+    release = dtpanel.DigitaktPanel.release
+    clear_latched = dtpanel.DigitaktPanel.clear_latched
+    _key = dtpanel.DigitaktPanel._key
+
+    def __init__(self):
+        fake = FakePanel()
+        self.codes, self.enc_codes = fake.codes, fake.enc_codes
+        self.after, self.after_cancel = fake.after, fake.after_cancel
+        self.elapse = fake.elapse
+        self.held, self.latched, self._named = set(), set(), True
+        self.emu = type('Emu', (), {'inbox': []})()
+        self.keyboard = Keyboard(self, dtpanel.DigitaktPanel.KEYS)
+
+    def _paint(self, code):
+        pass
+
+    def key(self, keysym, down, state=0):
+        ev = type('Ev', (), dict(keysym=keysym, keycode=KC[keysym],
+                                 state=state))()
+        self._key(ev, down)
+
+
+class ShiftClick(unittest.TestCase):
+    def test_letting_go_of_shift_clears_mouse_latches(self):
+        """A mouse shift-click latches until Shift is let go, like the
+        keyboard's; a key the keyboard still holds stays down."""
+        w = _Window()
+        func, one = w.codes['FUNC'], w.codes['1']
+        w.key('Shift_L', True)
+        w.key('F1', True, SHIFT_MASK)            # keyboard, held
+        w.press(func, type('Ev', (), {'state': SHIFT_MASK})())    # mouse
+        w.release(func)                          # mouse-up: stays latched
+        self.assertEqual(w.held, {func, one})
+        w.key('Shift_L', False, SHIFT_MASK)
+        self.assertEqual(w.held, {one})
+        self.assertIn(('release', func, 0), w.emu.inbox)
+        w.key('F1', False)
+        w.elapse()
+        self.assertEqual(w.held, set())
+
+
 # Labels the keyboard reaches another way: FUNC is Ctrl, and the encoder
 # push switches (A..H, LEVEL/DATA) are the knob keys.
 BY_OTHER_MEANS = {'FUNC', *panelkeys.KNOBS.values()}
