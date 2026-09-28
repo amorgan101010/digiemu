@@ -7,13 +7,13 @@ WIDTH, HEIGHT = 1000, 884
 BODY = (20, 74, 960, 776)
 SCALE = 3
 # Deliberately larger than the hardware OLED, at an exact integer zoom.
-SCREEN = (166, 183, 384, 192)
-BEZEL = (161, 178, 394, 202)
-MASTER_VOLUME = (94, 210, 32)
-ENCODERS = {letter: (610 + col * 100, 210 + row * 115, 32)
+SCREEN = (166, 143, 384, 192)
+BEZEL = (SCREEN[0] - 5, SCREEN[1] - 5, SCREEN[2] + 10, SCREEN[3] + 10)
+MASTER_VOLUME = (94, 174, 32)
+ENCODERS = {letter: (610 + col * 100, 174 + row * 115, 32)
             for row, letters in enumerate(('ABCD', 'EFGH'))
             for col, letter in enumerate(letters)}
-ENCODERS['LEVEL/DATA'] = (94, 325, 32)
+ENCODERS['LEVEL/DATA'] = (94, 289, 32)
 TRIG_LEGENDS = ('KICK', 'SNARE', 'TOM', 'CLAP', 'COWBELL', 'CLOSED HAT',
                 'OPEN HAT', 'CYMBAL', 'MIDI A', 'MIDI B', 'MIDI C', 'MIDI D',
                 'MIDI E', 'MIDI F', 'MIDI G', 'MIDI H')
@@ -30,29 +30,31 @@ def trig_positions(product):
 def buttons(product):
     """Firmware name -> (x, y, width, height, secondary legend, text tint)."""
     tone = product == 'Digitone'
+    # Shared rows align controls across the faceplate, including their legends.
+    menu_y, transport_y, cursor_y = 388, 470, 552
     out = {
-        'FUNC': (66, 452, 74, 46, None, None),
-        'PTN': (66, 654, 74, 46, 'Metronome', None),
-        'BANK': (66, 746, 74, 46, 'Mute Mode', None),
-        'SONG': (195, 452, 48, 46, 'Imp/Exp', None),
-        'GLOBAL': (267, 452, 48, 46, 'Save Proj', None),
-        'TEMPO': (411, 452, 48, 46, 'Tap Tempo', None),
-        'RECORD': (195, 524, 68, 46, 'Copy', None),
-        'PLAY': (286, 524, 68, 46, 'Clear', None),
-        'STOP': (377, 524, 68, 46, 'Paste', None),
-        'YES': (536, 504, 48, 46, 'Save Ptn', None),
-        'NO': (536, 574, 48, 46, 'Reload Ptn', None),
-        'UP': (674, 504, 48, 46, 'Note/Oct+' if tone else 'Rtrg/Oct+', None),
-        'LEFT': (604, 574, 48, 46, 'µTime−', None),
-        'DOWN': (674, 574, 48, 46, 'Note/Oct−' if tone else 'Rtrg/Oct−', None),
-        'RIGHT': (744, 574, 48, 46, 'µTime+', None),
-        'PAGE': (876, 574, 60, 46, 'Fill/Scale', None),
+        'FUNC': (66, menu_y, 74, 46, None, None),
+        'PTN': (66, 652, 74, 46, 'Metronome', None),
+        'BANK': (66, 744, 74, 46, 'Mute Mode', None),
+        'SONG': (195, menu_y, 48, 46, 'Imp/Exp', None),
+        'GLOBAL': (267, menu_y, 48, 46, 'Save Proj', None),
+        'TEMPO': (411, menu_y, 48, 46, 'Tap Tempo', None),
+        'RECORD': (195, transport_y, 68, 46, 'Copy', None),
+        'PLAY': (286, transport_y, 68, 46, 'Clear', None),
+        'STOP': (377, transport_y, 68, 46, 'Paste', None),
+        'YES': (536, transport_y, 48, 46, 'Save Ptn', None),
+        'NO': (536, cursor_y, 48, 46, 'Reload Ptn', None),
+        'UP': (674, transport_y, 48, 46, 'Note/Oct+' if tone else 'Rtrg/Oct+', None),
+        'LEFT': (604, cursor_y, 48, 46, 'µTime−', None),
+        'DOWN': (674, cursor_y, 48, 46, 'Note/Oct−' if tone else 'Rtrg/Oct−', None),
+        'RIGHT': (744, cursor_y, 48, 46, 'µTime+', None),
+        'PAGE': (876, cursor_y, 60, 46, 'Fill/Scale', None),
     }
     if tone:
         out.update({
-            'MIDI': (66, 524, 74, 46, 'MIDI Config', None),
-            'KEYBOARD': (80, 587, 46, 40, 'Add Notes/Arp', None),
-            'VOICE': (339, 452, 48, 46, 'Unison', None),
+            'MIDI': (66, transport_y, 74, 46, 'MIDI Config', None),
+            'KEYBOARD': (66, cursor_y, 74, 46, 'Add Notes/Arp', None),
+            'VOICE': (339, menu_y, 48, 46, 'Unison', None),
             'T1': (834, 651, 52, 52, 'Mute', None),
             'T2': (906, 651, 52, 52, 'Mute', None),
             'T3': (834, 743, 52, 52, 'Mute', None),
@@ -62,12 +64,12 @@ def buttons(product):
         legends = ('Setup', 'Arp Menu', 'Chorus', 'Delay', 'Reverb', 'Master')
         pitch = 74
     else:
-        out.update({'TRK': (66, 524, 74, 46, 'Chromatic', None),
-                    'SAMPLE': (339, 452, 48, 46, 'Direct', None)})
+        out.update({'TRK': (66, transport_y, 74, 46, 'Chromatic', None),
+                    'SAMPLE': (339, menu_y, 48, 46, 'Direct', None)})
         pages = ('TRIG', 'SRC', 'FLTR', 'AMP', 'LFO')
         legends = ('Quantize', 'Assign', 'Delay', 'Reverb', 'Master')
         pitch = 92
-    out.update({name: (536 + i * pitch, 428, 48, 46, legends[i], None)
+    out.update({name: (536 + i * pitch, menu_y, 48, 46, legends[i], None)
                 for i, name in enumerate(pages)})
     for label, (cx, cy, r) in ENCODERS.items():
         width = 84 if label == 'LEVEL/DATA' else 40

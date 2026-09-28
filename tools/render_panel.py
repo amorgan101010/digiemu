@@ -222,7 +222,7 @@ def plate(product):
                           box((x+2, y+2)))
     for sx, sy in ((42, 94), (504, 94), (958, 94), (42, 828), (504, 828), (958, 828)):
         screw(image, sx, sy)
-    text(image, (933, 122), 'digiemu', 30, '#eeeeea', bold=True, italic=True, anchor='rm')
+    text(image, (933, 114), 'digiemu', 30, '#eeeeea', bold=True, italic=True, anchor='rm')
     sx, sy, sw, sh = layout.SCREEN
     # A narrow recess keeps the deliberately enlarged display open and legible.
     rr(image, (sx-5, sy-5, sx+sw+5, sy+sh+5), 2, '#090a09', '#42443c', .7)
