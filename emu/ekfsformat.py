@@ -779,6 +779,29 @@ class Ekfs(object):
         name = sample_name(path_or_name)
         return self.add_file(parent, name, content), name, rate, frames
 
+    def add_dir(self, parent, name):
+        """Make an empty directory `name` in directory `parent`. -> its inode.
+
+        Laid out as format_image lays out /incoming, the only directory
+        below the root whose on-card form has been compared with the
+        device's. Its entry in the parent and the parent's '..' back-link
+        each count once, so the parent's link count goes up by one."""
+        ino = self.alloc_inode()
+        runs = self.alloc_blocks(4)
+        if len(runs) != 1:
+            raise Error('no run of 4 free blocks for a directory')
+        first = runs[0][0]
+        self.put_inode(ino, _dir_inode(parent, first, self.next_serial(), 2))
+        _write_dir_blocks(self, first, [(ino, '.', TYPE_DIR),
+                                        (parent, '..', TYPE_DIR)])
+        self.add_dir_entry(parent, name, ino, TYPE_DIR)
+        raw = self.inode(parent)
+        links = struct.unpack_from('>H', raw, 0x02)[0]
+        struct.pack_into('>H', raw, 0x02, links + 1)
+        self.put_inode(parent, raw)
+        self.reseal()
+        return ino
+
 
 
 # ------------------------------------------------------------------ format
@@ -818,6 +841,43 @@ def _dir_block(entries, size=BLOCK_BYTES):
         buf[o + 8:o + 8 + len(name)] = name.encode('latin-1')
         o += rec
     return buf
+
+
+def _dir_inode(parent, first_block, serial, links):
+    """A directory's inode: its entry block at `first_block`, the three
+    index blocks right after it."""
+    raw = bytearray(INODE_SIZE)
+    raw[0x00] = TYPE_DIR
+    raw[0x01] = 2
+    # A link count: the directory's own '.', its entry in its parent (for
+    # root, its own '..') and one per child directory's '..'. The device
+    # records 3 for root and 2 for an empty /incoming. This used to be
+    # computed as "entries on the card", which happens to give the same
+    # two numbers and then diverges the moment a file is added.
+    struct.pack_into('>H', raw, 0x02, links)
+    struct.pack_into('>I', raw, 0x04, DIR_SIZE)
+    struct.pack_into('>I', raw, 0x08, 3)
+    struct.pack_into('>I', raw, 0x10, serial)
+    struct.pack_into('>I', raw, 0x1c, parent)
+    struct.pack_into('>H', raw, 0x1e, 2)
+    struct.pack_into('>III', raw, 0x20, 0, 1, first_block)
+    struct.pack_into('>III', raw, 0x2c, DIR_EXTENT_LOGICAL_2, 3,
+                     first_block + 1)
+    return raw
+
+
+def _write_dir_blocks(fs, first_block, entries):
+    """entries: [(inode, name, type)] -> the entry block and its indexes."""
+    fs.put_block(first_block, _dir_block(entries))
+    # The three indexes, which the firmware lists and searches through.
+    # Locations follow _dir_block's layout: every record at its natural
+    # length except the last, which runs to the end of the block.
+    located, o = [], 0
+    for e_ino, e_name, e_typ in entries:
+        located.append((o, e_ino, e_name.encode('latin-1'), e_typ))
+        o += Ekfs._reclen(e_name)
+    for k, buf in enumerate(build_indexes(located)):
+        fs.put_block(first_block + 1 + k, buf)
 
 
 def format_image(path, base=REGION, with_incoming=True):
@@ -872,35 +932,9 @@ def format_image(path, base=REGION, with_incoming=True):
     def make_dir(ino, parent, first_block, serial, entries, links):
         for b in range(first_block, first_block + 4):
             fs._set_bit(bb, b)
-        raw = bytearray(INODE_SIZE)
-        raw[0x00] = TYPE_DIR
-        raw[0x01] = 2
-        # A link count: the directory's own '.', its entry in its parent (for
-        # root, its own '..') and one per child directory's '..'. The device
-        # records 3 for root and 2 for an empty /incoming. This used to be
-        # computed as "entries on the card", which happens to give the same
-        # two numbers and then diverges the moment a file is added.
-        struct.pack_into('>H', raw, 0x02, links)
-        struct.pack_into('>I', raw, 0x04, DIR_SIZE)
-        struct.pack_into('>I', raw, 0x08, 3)
-        struct.pack_into('>I', raw, 0x10, serial)
-        struct.pack_into('>I', raw, 0x1c, parent)
-        struct.pack_into('>H', raw, 0x1e, 2)
-        struct.pack_into('>III', raw, 0x20, 0, 1, first_block)
-        struct.pack_into('>III', raw, 0x2c, DIR_EXTENT_LOGICAL_2, 3,
-                         first_block + 1)
         fs._set_bit(ib, ino)
-        fs.put_inode(ino, raw)
-        fs.put_block(first_block, _dir_block(entries))
-        # The three indexes, which the firmware lists and searches through.
-        # Locations follow _dir_block's layout: every record at its natural
-        # length except the last, which runs to the end of the block.
-        located, o = [], 0
-        for e_ino, e_name, e_typ in entries:
-            located.append((o, e_ino, e_name.encode('latin-1'), e_typ))
-            o += Ekfs._reclen(e_name)
-        for k, buf in enumerate(build_indexes(located)):
-            fs.put_block(first_block + 1 + k, buf)
+        fs.put_inode(ino, _dir_inode(parent, first_block, serial, links))
+        _write_dir_blocks(fs, first_block, entries)
 
     root_entries = [(2, '.', TYPE_DIR), (2, '..', TYPE_DIR),
                     (RAM_INODE, 'factory', TYPE_DIR)]

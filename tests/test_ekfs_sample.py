@@ -128,6 +128,42 @@ class EkfsSampleTest(unittest.TestCase):
         names = [n for _l, _i, n, _t in fs.dir_entries(inc)]
         self.assertIn(b"Kick 01", names)
 
+    def test_add_dir_matches_the_formatted_incoming(self):
+        """A directory made by add_dir is laid out as format_image lays out
+        /incoming, nests, takes samples, and counts links like the device:
+        '.', its entry in its parent, and one per child directory."""
+        fs = self._fresh()
+        root, inc = 2, self.ek.find_dir(fs, "incoming")
+        pack = fs.add_dir(root, "Concrete Ocean")
+        cat = fs.add_dir(pack, "Percussion")
+        ino, _n, _r, _f = fs.add_sample(cat, "Shaker 1.wav", _wav([(1,)]))
+
+        def links(n):
+            return struct.unpack(">H", bytes(fs.inode(n))[0x02:0x04])[0]
+        self.assertEqual((links(root), links(pack), links(cat)), (4, 3, 2))
+
+        def shape(n):
+            # Everything but the serial and where the blocks landed.
+            raw = bytearray(fs.inode(n))
+            raw[0x10:0x14] = bytes(4)
+            ext = self.ek.Ekfs.extents(raw)
+            first = ext[0][2]
+            self.assertEqual(ext[1][2], first + 1)
+            raw[0x28:0x2C] = raw[0x34:0x38] = bytes(4)
+            return bytes(raw)
+        self.assertEqual(shape(pack), shape(inc)[:0x02] + b"\x00\x03"
+                         + shape(inc)[0x04:])
+        self.assertEqual(shape(cat), shape(inc))
+
+        def entries(n):
+            return [(i, name) for _l, i, name, _t in fs.dir_entries(n)]
+        self.assertIn((pack, b"Concrete Ocean"), entries(root))
+        self.assertEqual(entries(pack),
+                         [(pack, b"."), (root, b".."), (cat, b"Percussion")])
+        self.assertEqual(entries(cat),
+                         [(cat, b"."), (pack, b".."), (ino, b"Shaker 1")])
+        self.assertTrue(fs.checksum_ok())
+
     def test_format_clears_the_hash_table(self):
         """Stale words with bit 0 set there would be phantom files in the
         mount's hash index; the firmware's format leaves blocks 0..95 zero."""
