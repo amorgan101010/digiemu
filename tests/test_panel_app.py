@@ -1317,9 +1317,10 @@ class PanelLayoutTest(unittest.TestCase):
                     for k, (x, y, r) in cls.ENCODERS.items()})
         x, y, r = self.dt.MASTER_VOLUME
         out['master volume'] = (x - r, y - r, x + r, y + r + 17)   # + its label
-        px, py = cls.BUTTONS['PAGE'][:2]
+        px, py, pw, _ph = cls.BUTTONS['PAGE'][:4]
+        first_x = px + pw / 2 - (len(dev.page_leds) - 1) * 9
         for i, _led in enumerate(dev.page_leds):
-            cx, cy = px + 13 + i * 22, py - 12
+            cx, cy = first_x + i * 18, py - 30
             out['page led %d' % i] = (cx - 5, cy - 5, cx + 5, cy + 5)
         sx, sy = cls.SCREEN_X, cls.SCREEN_Y
         out['screen'] = (sx, sy, sx + self.gui.W * self.dt.SCALE,
@@ -1356,7 +1357,7 @@ class PanelLayoutTest(unittest.TestCase):
         cls = self.dn.DigitonePanel
         self.assertTrue(issubclass(cls, self.dt.DigitaktPanel))
         self.assertEqual(cls.PRODUCT, 'Digitone')
-        self.assertIn('Digitone', cls.TITLE)
+        self.assertEqual(cls.TITLE, 'digiemu — FM')
         self.assertFalse(cls.SAMPLES)
         self.assertTrue(self.dt.DigitaktPanel.SAMPLES)
 
@@ -1442,6 +1443,7 @@ class MasterVolumeTest(unittest.TestCase):
                 return self.n
             create_text = lambda self, *a, **kw: self._new('text', **kw)
             create_oval = lambda self, *a, **kw: self._new('oval', **kw)
+            create_image = lambda self, *a, **kw: self._new('image', **kw)
             create_line = lambda self, *a, **kw: self._new('line', **kw)
 
             def tag_bind(self, item, seq, fn):
@@ -1457,14 +1459,16 @@ class MasterVolumeTest(unittest.TestCase):
                 emu=types.SimpleNamespace(set_volume=lambda v: gains.append(v)),
                 player=types.SimpleNamespace(gain=1.0))
             for name in ('audio_toggle_mute', 'audio_play', 'audio_clear',
-                         'audio_save', 'load_samples'):
+                         'audio_save', 'load_samples', 'midi_menu'):
                 setattr(win, name, lambda: None)
+            win._knob_target = lambda *args: win.canvas.create_image()
             for name in ('_draw_master_volume', '_paint_master_volume'):
                 setattr(win, name, getattr(cls, name).__get__(win))
             gains = []
             cls._draw_audio_controls(win)
-            texts = [kw.get('text') for kind, kw in win.canvas.drawn if kind == 'text']
-            self.assertIn('Master Volume', texts, cls.PRODUCT)
+            # Labels and cap materials are baked into the skin. The runtime
+            # places an image hit target and the moving volume indicator.
+            self.assertIn('image', [kind for kind, _kw in win.canvas.drawn], cls.PRODUCT)
             self.assertIn('<MouseWheel>', win.canvas.binds[win._mv_oval], cls.PRODUCT)
             self.assertEqual(win._mv_value, 1.0)
             cls._turn_master_volume(win, -2)

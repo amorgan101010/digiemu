@@ -150,6 +150,12 @@ datas = [
     (BUILD_INFO, '.'),
 ]
 
+# Original panel artwork for Tk. No runtime Pillow.
+for product in ('digitakt', 'digitone'):
+    panel_dir = os.path.join('emu', 'assets', 'panels', product)
+    for pattern in ('*.png', 'skin.json'):
+        datas.append((os.path.join(ROOT, panel_dir, pattern), panel_dir))
+
 # What the app imports inside functions (bundle_guard.REQUIRED_MODULES).
 # PyInstaller only warns about a hidden import it cannot find, so the guard
 # below also checks that the analysis holds every one.
