@@ -251,5 +251,86 @@ class Served(unittest.TestCase):
         self.assertEqual(self.emu.inbox[1], ('release', 19, 0))
 
 
+class SoundEmu(FakeEmu):
+    def __init__(self):
+        super().__init__()
+        self.audio_cfg = {'rate': 48000}
+        self.audio_live = True
+        self.audio_taps = ()
+
+
+class Sound(unittest.TestCase):
+    def setUp(self):
+        self.emu = SoundEmu()
+        self.server = remote.RemotePanel(self.emu, lambda: LAYOUT, 0)
+        self.assertTrue(self.server.start())
+        self.page = Page(self.server.port)
+        self.page.send('hello')
+
+    def tearDown(self):
+        self.page.close()
+        self.server.stop()
+
+    def feed(self, pcm):
+        for tap in self.emu.audio_taps:
+            tap(pcm)
+
+    def test_the_rate_is_announced(self):
+        self.page.recv_until(lambda op, p: op == 0x1 and p == b'A 48000')
+
+    def test_no_rate_without_live_audio(self):
+        self.assertEqual(remote.RemotePanel(FakeEmu(), lambda: None, 0)
+                         .sound_rate(), 0)
+        self.emu.audio_live = False
+        self.assertEqual(self.server.sound_rate(), 0)
+
+    def test_nothing_is_kept_while_no_page_listens(self):
+        self.assertEqual(len(self.emu.audio_taps), 1)
+        self.feed(bytes(400))
+        self.assertEqual(len(self.server._pcm), 0)
+
+    def test_a_page_that_asks_gets_the_sound(self):
+        self.page.send('a 1')
+        self.assertTrue(wait_for(lambda: self.server._listening))
+        pcm = bytes(range(256)) * 4
+        self.feed(pcm)
+        op, frame = self.page.recv_until(
+            lambda op, p: op == 0x2 and p[:1] == b'A')
+        self.assertEqual(frame, b'A' + pcm)
+        self.page.send('a 0')
+        self.assertTrue(wait_for(lambda: not self.server._listening))
+
+    def test_only_pages_that_ask(self):
+        other = Page(self.server.port)
+        try:
+            other.send('a 1')
+            self.assertTrue(wait_for(lambda: self.server._listening))
+            self.feed(bytes(64))
+            other.recv_until(lambda op, p: op == 0x2 and p[:1] == b'A')
+            self.page.sock.settimeout(0.3)
+            with self.assertRaises(socket.timeout):
+                while True:
+                    op, p = self.page.recv()
+                    self.assertFalse(op == 0x2 and p[:1] == b'A')
+        finally:
+            other.close()
+
+    def test_the_backlog_is_bounded(self):
+        self.page.send('a 1')
+        self.assertTrue(wait_for(lambda: self.server._listening))
+        self.feed(bytes(4 * 48000 * 4))      # 4 s, in one block
+        op, frame = self.page.recv_until(
+            lambda op, p: op == 0x2 and p[:1] == b'A')
+        self.assertEqual(len(frame), 1 + int(remote.SOUND_KEEP_S * 48000) * 4)
+
+    def test_disconnect_stops_listening_and_stop_unhooks(self):
+        self.page.send('a 1')
+        self.assertTrue(wait_for(lambda: self.server._listening))
+        self.page.close()
+        self.assertTrue(wait_for(lambda: not self.server._listening))
+        self.server.stop()
+        self.assertEqual(self.emu.audio_taps, ())
+
+
 if __name__ == '__main__':
     unittest.main()

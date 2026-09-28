@@ -17,11 +17,22 @@ shape only; nothing is taken from it.
                   binary 'S', 1024 bytes of OLED (128x64, 1 bit a pixel,
                   row-major, MSB first), then r, g, b for each LED in the
                   layout's `leds` order (0, 0, 0 when dark or unknown)
+                  'A <rate>'      the sample rate of the sound it can
+                                  stream; 0 while there is none
+                  binary 'A', then 16-bit LE stereo PCM: the emulator's
+                                  output, to a page that asked for it
                 The page sends text:
                   hello            send the layout and state now
                   b <code> <1|0>   press / release a key
                   e <code> <n>     turn an encoder n detents (signed)
                   r                release every key this page holds
+                  a <1|0>          stream the sound to this page, or stop
+
+Sound goes only to pages that ask, and only while the emulator plays live
+(accelerated): it is taken before the window's mute, so the PC can be
+silenced while an iPad plays. The page schedules each block ahead of its
+own clock (Web Audio's AudioBufferSourceNode: an AudioWorklet needs HTTPS)
+and keeps a cushion against Wi-Fi's jitter, ?cushion=<ms> in the address.
 
 Input goes straight onto the emulator's inbox, as the window's own does. Each
 connection remembers what it holds and lets go of it when the connection
@@ -54,6 +65,8 @@ FRAME_S = 1 / 30          # publish at most this often
 PING_S = 4.0              # ping an idle page this often
 DEAD_S = 12.0             # no reply for this long: the page is gone
 MAX_DETENTS = 96          # one message's turn, before splitting
+SOUND_S = 0.02            # send the sound this often
+SOUND_KEEP_S = 0.5        # most sound held for a page, before the oldest goes
 
 
 def accept_key(key):
@@ -131,6 +144,8 @@ class _Client:
         self.held = set()
         self.ready = False        # has asked (hello) and been sent the layout
         self.last_state = None
+        self.rate_sent = 0        # the 'A <rate>' last told it; 0 is unsaid
+        self.sound = False        # has asked for the sound (a 1)
         self.heard = time.monotonic()
         self.closed = False
 
@@ -166,6 +181,9 @@ class RemotePanel:
         self._clients = []
         self._lock = threading.Lock()
         self._sent_layout = None
+        self._pcm = bytearray()       # sound not yet sent
+        self._pcm_lock = threading.Lock()
+        self._listening = False       # some page wants the sound
 
     # ------------------------------------------------------------ lifecycle
     def start(self):
@@ -186,15 +204,23 @@ class RemotePanel:
             break
         else:
             return False
-        for target in (self._httpd.serve_forever, self._publish):
+        for target in (self._httpd.serve_forever, self._publish,
+                       self._stream):
             t = threading.Thread(target=target, daemon=True,
                                  name='remote-panel')
             t.start()
             self._threads.append(t)
+        taps = getattr(self.emu, 'audio_taps', None)
+        if taps is not None:
+            self.emu.audio_taps = taps + (self.feed_sound,)
         return True
 
     def stop(self):
         """Stop serving and let go of everything any page holds."""
+        taps = getattr(self.emu, 'audio_taps', None)
+        if taps is not None:
+            self.emu.audio_taps = tuple(t for t in taps
+                                        if t != self.feed_sound)
         self._stop.set()
         if self._httpd is not None:
             self._httpd.shutdown()
@@ -234,6 +260,8 @@ class RemotePanel:
         try:
             if verb == 'hello':
                 client.last_state = None
+            elif verb == 'a' and len(args) == 1:
+                self._want_sound(client, args[0] == '1')
             elif verb == 'b' and len(args) == 2:
                 code, down = int(args[0]), args[1] == '1'
                 if code not in self._codes('b'):
@@ -292,6 +320,7 @@ class RemotePanel:
                 return
             client.closed = True
             self._let_go(client)
+        self._want_sound(client, False)
         try:
             client.sock.shutdown(socket.SHUT_RDWR)
         except OSError:
@@ -321,12 +350,17 @@ class RemotePanel:
             for client in self.clients():
                 client.ready = False
         state = None
+        rate = self.sound_rate()
         for client in self.clients():
             if now - client.heard > DEAD_S:
                 self._drop(client)
                 continue
             if ping and not self._send(client, 0x9, b''):
                 continue
+            if rate != client.rate_sent:
+                if not self._send(client, 0x1, b'A %d' % rate):
+                    continue
+                client.rate_sent = rate
             if lay is None:
                 continue
             if not client.ready:
@@ -342,6 +376,54 @@ class RemotePanel:
             if state != client.last_state:
                 if self._send(client, 0x2, state):
                     client.last_state = state
+
+    # ---------------------------------------------------------------- sound
+    def sound_rate(self):
+        """-> the sample rate of the sound a page can have; 0 if none (the
+        emulator is not playing live, or cannot be tapped)."""
+        emu = self.emu
+        cfg = getattr(emu, 'audio_cfg', None)
+        if (not cfg or not getattr(emu, 'audio_live', False)
+                or getattr(emu, 'audio_taps', None) is None):
+            return 0
+        return cfg['rate']
+
+    def _want_sound(self, client, on):
+        with self._pcm_lock:
+            client.sound = on and not client.closed
+            self._listening = any(c.sound for c in self.clients())
+            if not self._listening:
+                del self._pcm[:]
+
+    def feed_sound(self, pcm):
+        """Take a block of live PCM (16-bit LE stereo). Called by the
+        emulator's worker thread, so it only queues, and does nothing while
+        no page listens."""
+        if not self._listening:
+            return
+        with self._pcm_lock:
+            self._pcm += pcm
+            cfg = getattr(self.emu, 'audio_cfg', None) or {}
+            keep = int(SOUND_KEEP_S * cfg.get('rate', 48000)) * 4
+            over = len(self._pcm) - keep
+            if over > 0:
+                del self._pcm[:over + (-over % 4)]
+
+    def _stream(self):
+        """Send the queued sound to every page that asked for it."""
+        while not self._stop.wait(SOUND_S):
+            try:
+                with self._pcm_lock:
+                    if not self._pcm:
+                        continue
+                    frame = b'A' + bytes(self._pcm)
+                    del self._pcm[:]
+                for client in self.clients():
+                    if client.sound:
+                        self._send(client, 0x2, frame)
+            except Exception as exc:                   # noqa: BLE001
+                print('[remote] streaming sound failed: %r' % exc,
+                      flush=True)
 
     # ------------------------------------------------------------ websocket
     def serve_socket(self, sock):
@@ -495,11 +577,17 @@ html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
   0 0 0 15px #39414d}
 #status{position:fixed;right:12px;bottom:8px;color:var(--dim);font-size:12px}
 #status.bad{color:var(--amber)}
+#sound{position:fixed;left:12px;bottom:6px;font:inherit;font-size:12px;
+  color:var(--dim);background:var(--face);border:1px solid var(--edge);
+  border-radius:6px;padding:4px 10px}
+#sound.on{color:var(--amber);border-color:var(--amber)}
+#sound[hidden]{display:none}
 </style>
 </head>
 <body>
 <div id="stage"></div>
 <div id="status">connecting</div>
+<button id="sound" hidden>sound off</button>
 <script>
 'use strict';
 const stage = document.getElementById('stage');
@@ -518,9 +606,13 @@ function send(text) { if (ws && ws.readyState === 1) ws.send(text); }
 function connect() {
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => { retry = 500; say('connected'); send('hello'); };
+  ws.onopen = () => {
+    retry = 500; say('connected'); send('hello');
+    if (soundOn) send('a 1');
+  };
   ws.onclose = () => {
     letGoAll(false);
+    soundRate(0);
     say('reconnecting', true);
     setTimeout(connect, retry);
     retry = Math.min(retry * 2, 4000);
@@ -528,8 +620,11 @@ function connect() {
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
       if (ev.data.startsWith('L ')) build(JSON.parse(ev.data.slice(2)));
+      else if (ev.data.startsWith('A ')) soundRate(+ev.data.slice(2));
     } else {
-      state(new Uint8Array(ev.data));
+      const b = new Uint8Array(ev.data);
+      if (b[0] === 0x41) sound(ev.data);
+      else state(b);
     }
   };
 }
@@ -692,6 +787,87 @@ function letGoAll(tell) {
   for (const id of [...pointers.keys()]) up({pointerId: id});
   if (tell) send('r');
 }
+
+// ---- sound: the emulator's output, streamed while the page asks for it.
+// Each block is scheduled on the page's own clock, `playAt` running on by
+// exact block lengths; it restarts a cushion ahead after running dry, and a
+// block that would put it more than SLACK past the cushion is dropped
+// (Wi-Fi delivers in bursts, and the two clocks drift apart).
+const soundBtn = document.getElementById('sound');
+const CUSHION = (+new URLSearchParams(location.search).get('cushion') || 150) / 1000;
+const SLACK = 0.1;
+let actx = null, rate = 0, soundOn = false, playAt = 0, dropouts = 0;
+
+function soundRate(r) {
+  rate = r;
+  soundBtn.hidden = !r;
+  if (actx && r && actx.sampleRate !== r && actx._wanted !== r) { actx.close(); actx = null; }
+  showSound();
+}
+
+function showSound() {
+  const live = actx && actx.state === 'running';
+  soundBtn.className = soundOn ? 'on' : '';
+  soundBtn.textContent = !soundOn ? 'sound off' : !live ? 'tap for sound'
+    : dropouts ? 'sound on · ' + dropouts + ' dropouts' : 'sound on';
+}
+
+function context() {
+  // At the stream's rate, so the blocks join without resampling seams.
+  try { actx = new AudioContext({sampleRate: rate}); }
+  catch (e) { actx = new (window.AudioContext || window.webkitAudioContext)(); }
+  actx._wanted = rate;
+  actx.onstatechange = showSound;
+}
+
+// A click, not pointerdown: iOS lets a page start sound only from one.
+soundBtn.addEventListener('click', () => {
+  if (!rate) return;
+  if (navigator.audioSession) {
+    try { navigator.audioSession.type = 'playback'; } catch (e) {}  // past the mute switch
+  }
+  if (!actx) context();
+  if (soundOn && actx.state === 'running') {
+    soundOn = false;
+    send('a 0');
+  } else {
+    soundOn = true;
+    actx.resume();
+    const tick = actx.createBufferSource();   // older iOS unlocks on a played buffer
+    tick.buffer = actx.createBuffer(1, 1, actx.sampleRate);
+    tick.connect(actx.destination);
+    tick.start();
+    playAt = 0;
+    send('a 1');
+  }
+  showSound();
+});
+
+function sound(data) {
+  if (!soundOn || !actx || actx.state !== 'running' || !rate) return;
+  const pcm = new Int16Array(data.slice(1, 1 + ((data.byteLength - 1) & ~3)));
+  const n = pcm.length >> 1;
+  if (!n) return;
+  const now = actx.currentTime;
+  if (playAt < now + 0.005) {
+    if (playAt) { dropouts++; showSound(); }
+    playAt = now + CUSHION;
+  } else if (playAt - now > CUSHION + SLACK) {
+    return;
+  }
+  const buf = actx.createBuffer(2, n, rate);
+  const l = buf.getChannelData(0), r = buf.getChannelData(1);
+  for (let i = 0, j = 0; i < n; i++, j += 2) { l[i] = pcm[j] / 32768; r[i] = pcm[j + 1] / 32768; }
+  const src = actx.createBufferSource();
+  src.buffer = buf;
+  src.connect(actx.destination);
+  src.start(playAt);
+  playAt += n / rate;
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && soundOn && actx) { playAt = 0; actx.resume().then(showSound, showSound); }
+});
 
 addEventListener('pointermove', move);
 addEventListener('pointerup', up);

@@ -52,7 +52,9 @@ firmware's folder and made again on the next start.
 
 REMOTE serves the panel to a browser on the local network (emu/remote.py):
 the layout this window placed, the live screen and the LEDs, played with
-multitouch. It starts with the window; clicking it turns it off, and that
+multitouch, and the sound too once the page's sound button is tapped (while
+audio is live; the window's mute leaves it playing). It starts with the
+window; clicking it turns it off, and that
 choice is kept in remote.json beside midi.json until it is clicked on
 again. The address is shown under the button.
 

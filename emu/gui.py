@@ -368,6 +368,9 @@ class Emulator(threading.Thread):
         self._live_error = None
         self._live_started = False
         self._live_buf = bytearray()
+        # Called with each block of live PCM on the worker thread; replaced
+        # whole (a tuple), never mutated, as it is read without a lock.
+        self.audio_taps = ()
         # Master Volume knob position (software gain on live output). 1.0
         # = unity; 0.0 = silent; the knob goes a bit above unity if turned
         # past 12 o'clock, with clipping at the host device.
@@ -1296,6 +1299,11 @@ class Emulator(threading.Thread):
                 if over > 0:
                     del self._audio_pcm[:over + (-over % 4)]
             self.audio_frames += n // 8
+            if self.audio_live:
+                # The remote panel's stream (emu/remote.py): not muted with
+                # the host, so the PC can be silenced while a page plays.
+                for tap in self.audio_taps:
+                    tap(pcm)
             if self.audio_live and not self.audio_muted:
                 self._live_write(pcm)
         now = time.time()
