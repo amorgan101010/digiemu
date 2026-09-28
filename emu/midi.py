@@ -126,6 +126,10 @@ class MidiIn:
     DECAY = 0.05                    # envelope sinks 50 ms per second
     BYTE_S = 10 / 31250             # one DIN byte: start + 8 data + stop
     WINDOW_S = 0.001
+    # Clock bytes never closer than this: each goes in on its own delivery, so
+    # a backlog that is late all at once (the host stalled) still gives the
+    # firmware's 24-clock sum a non-zero span. 2 ms is 1250 BPM.
+    CLOCK_GAP_S = 2 * WINDOW_S
     # Clock smoothing (see _clock_slot): an alpha-beta tracker on 0xF8.
     PLL_PHASE = 0.1                 # share of a tick's error taken at once
     PLL_FREQ = PLL_PHASE ** 2 / (2 - PLL_PHASE)   # matched: follows a ramp
@@ -146,6 +150,7 @@ class MidiIn:
         self._offset = None                   # emulated minus host*ips
         self._offset_t = None
         self._last_target = None
+        self._last_clock = None               # slot of the last 0xF8 queued
         self.received = 0           # bytes the host handed us
         self.delivered = 0          # bytes written into the ring
         self.raised = 0             # vector 156 taken
@@ -166,9 +171,16 @@ class MidiIn:
         with self._lock:
             self.m, self.ips = m, ips
             now = time.monotonic()
-            if self._pending:        # arrived before the clock was known
-                self._stamped.append((now, bytes(self._pending)))
-                self._pending.clear()
+            # Arrived before the clock was known, so it has no timing left.
+            # Clock that queued up meanwhile (a session resumed while a sender
+            # runs) is dropped: stamped as one moment it went in with one
+            # interrupt, and the firmware's tempo divide by its 24-clock span
+            # hit zero and halted it at the first instruction. The live clock
+            # after it gives the tempo.
+            backlog = bytes(b for b in self._pending if b != 0xF8)
+            if backlog:
+                self._stamped.append((now, backlog))
+            self._pending.clear()
 
     def set_ips(self, ips):
         self.ips = ips
@@ -249,6 +261,10 @@ class MidiIn:
                     if slot < done:
                         self.late += 1
                         slot = done
+                    if b == 0xF8:
+                        if self._last_clock is not None:
+                            slot = max(slot, self._last_clock + self.CLOCK_GAP_S * self.ips)
+                        self._last_clock = slot
                     self._push(slot, b)
                     continue
                 if self._last_target is not None:

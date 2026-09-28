@@ -94,6 +94,23 @@ class MidiTimingTest(unittest.TestCase):
             worst = max(worst, abs(got - true))
         self.assertLess(worst, 1.5)
 
+    def test_clock_queued_before_attach_is_dropped(self):
+        # A resumed session while MD sends clock: 35 bytes waited for the
+        # emulator, went in with one interrupt, and the firmware divided by
+        # a zero 24-clock span (vector 257 at the first instruction).
+        mi = midi.MidiIn()
+        mi.put(b'\xf8' * 30 + b'\x90\x3c\x64' + b'\xf8' * 2)
+        mi.attach(object(), IPS)
+        mi._offset = 0.0
+        mi._schedule(0)
+        self.assertEqual(sorted(b for _t, _s, b in mi._queue), [0x3C, 0x64, 0x90])
+
+    def test_clock_that_is_late_all_at_once_is_spread(self):
+        mi, t = _scheduled([(0.001 * i, b'\xf8') for i in range(30)], done=5_000_000)
+        gaps = [b - a for a, b in zip(t, t[1:])]
+        self.assertGreaterEqual(min(gaps), midi.MidiIn.CLOCK_GAP_S * IPS)
+        self.assertGreater(midi.MidiIn.CLOCK_GAP_S, midi.MidiIn.WINDOW_S)
+
     def test_start_is_never_overtaken_by_a_later_clock(self):
         ticks = [(i * 0.02, b'\xf8') for i in range(20)]
         # Start arrives just before tick 20, which comes late: a smoothed
