@@ -361,7 +361,9 @@ class Emulator(threading.Thread):
         self._audio_mark = 0
         # Live output (accelerated Unicorn only): see _live_write.
         self.audio_live = False
-        self.audio_muted = False
+        # DIGIEMU_MUTED=1 starts with the host output muted (a remote panel
+        # still plays): how elektremu studio starts it for a remote user.
+        self.audio_muted = os.environ.get('DIGIEMU_MUTED') == '1'
         self.live_underruns = 0
         self.live_trimmed = 0       # chunks dropped to keep latency down
         self._live_out = None
@@ -1308,6 +1310,9 @@ class Emulator(threading.Thread):
                     tap(pcm)
             if self.audio_live and not self.audio_muted:
                 self._live_write(pcm)
+            elif self.audio_live and self._live_out is None:
+                self._live_open()   # muted from the start: the device still
+                                    # exists, so it can be patched and unmuted
         now = time.time()
         if self._audio_t is None:
             self._audio_t, self._audio_mark = now, self.audio_frames
@@ -1329,18 +1334,9 @@ class Emulator(threading.Thread):
 
     def _live_write(self, pcm):
         """Send freshly rendered audio to the host device (worker thread)."""
-        out = self._live_out
+        out = self._live_out or self._live_open()
         if out is None:
-            if self._live_error:
-                return
-            try:
-                out = self._live_out = audioout.WaveOut(
-                    self.audio_cfg['rate'], 2, buffers=40, block_ms=10)
-            except OSError as exc:
-                self._live_error = str(exc)
-                print('[gui] live audio unavailable: %s' % exc, flush=True)
-                return
-            out.gain = self._volume
+            return
         if self._live_started and out.queued() == 0:
             # Ran dry (the emulator fell behind): build the cushion again
             # rather than dribbling out block by block.
@@ -1361,6 +1357,18 @@ class Emulator(threading.Thread):
             self._live_started = True
         out.write(bytes(self._live_buf))
         del self._live_buf[:]
+
+    def _live_open(self):
+        """-> the host device, opened on first use, or None if it can't be."""
+        if self._live_out is None and not self._live_error:
+            try:
+                self._live_out = audioout.WaveOut(
+                    self.audio_cfg['rate'], 2, buffers=40, block_ms=10)
+                self._live_out.gain = self._volume
+            except OSError as exc:
+                self._live_error = str(exc)
+                print('[gui] live audio unavailable: %s' % exc, flush=True)
+        return self._live_out
 
     def audio_mute(self, muted):
         """Silence (or restore) live output; the recording carries on."""
