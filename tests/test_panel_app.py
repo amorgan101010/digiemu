@@ -1289,6 +1289,103 @@ class EncoderScaleTest(Quiet):
         self.assertEqual(sent, [panelin.encode_encoder(0, 3)])
 
 
+class _Held:
+    """Stands in for panelin.Held: each transition is its own marker."""
+
+    def __init__(self):
+        self.down = set()
+
+    def press(self, code):
+        self.down.add(code)
+        return ('p', code)
+
+    def release(self, code):
+        self.down.discard(code)
+        return ('r', code)
+
+    def down_codes(self):
+        return sorted(self.down)
+
+    def release_all(self):
+        self.down.clear()
+        return [('all', 0)]
+
+
+@NEEDS_GUI
+class PacingTest(Quiet):
+    """_drain_input paces each key on its own: a key's next transition
+    waits PANEL_DWELL_MS of emulated time after its last, while other keys
+    go one a chunk, in queue order."""
+
+    IPS = 64_000_000
+    CHUNK = IPS // 200             # the run loop's chunk at this rate: 5 ms
+
+    def run_chunks(self, events, chunks, dwell_ms=50, feed=None):
+        """-> {chunk index: [transition, ...]} over `chunks` chunks. `feed`
+        maps a chunk index to events queued just before it."""
+        from emu import gui, panelin
+        emu = types.SimpleNamespace(
+            held=_Held(), _dwell_ms=dwell_ms, _key_at={},
+            _pits=types.SimpleNamespace(
+                sources=[types.SimpleNamespace(ips=self.IPS)]),
+            inbox=deque(events), stats={'instrs': 0},
+            device=types.SimpleNamespace(encoder_channel=lambda code: code,
+                                         encoder_counts=1))
+        got = {}
+        now = [0]
+        mark = lambda *pos: repr(pos).encode() + b';'
+        with mock.patch.object(panelin, 'encode_buttons', mark), \
+                mock.patch.object(panelin, 'encode_encoder', mark), \
+                mock.patch.object(panelin, 'feed', lambda m, prof, data:
+                                  got.setdefault(now[0], []).extend(
+                                      data.decode().split(';')[:-1]) or 0):
+            for i in range(chunks):
+                now[0] = i
+                emu.inbox.extend((feed or {}).get(i, ()))
+                gui.Emulator._drain_input(emu, None, None, 0x40)
+                emu.stats['instrs'] += self.CHUNK
+        return got
+
+    def test_a_chord_lands_a_chunk_a_key(self):
+        keys = [8, 9, 10, 0, 1, 2]          # F1-F3, then 1-3
+        got = self.run_chunks([('press', k, 0) for k in keys], 10)
+        self.assertEqual(got, {i: ["('p', %d)" % k]
+                               for i, k in enumerate(keys)})
+
+    def test_a_quick_release_waits_out_its_own_press(self):
+        got = self.run_chunks([('press', 5, 0), ('release', 5, 0)], 20)
+        self.assertEqual(got, {0: ["('p', 5)"], 10: ["('r', 5)"]})
+
+    def test_other_keys_do_not_wait_on_that_dwell(self):
+        got = self.run_chunks([('press', 5, 0)], 20,
+                              feed={3: [('press', 6, 0), ('release', 6, 0)]})
+        self.assertEqual(got[3], ["('p', 6)"])
+        self.assertEqual(got[13], ["('r', 6)"])
+
+    def test_a_waiting_key_holds_back_the_ones_behind_it(self):
+        # FUNC (19) let go, then 3 pressed: 3 must not arrive with FUNC held.
+        got = self.run_chunks([('press', 19, 0), ('release', 19, 0),
+                               ('press', 3, 0)], 20)
+        self.assertEqual(got, {0: ["('p', 19)"], 10: ["('r', 19)"],
+                               11: ["('p', 3)"]})
+
+    def test_release_all_waits_for_every_held_key(self):
+        got = self.run_chunks([('press', 1, 0), ('press', 2, 0),
+                               ('release_all', 0, 0)], 20)
+        self.assertEqual(got, {0: ["('p', 1)"], 1: ["('p', 2)"],
+                               11: ["('all', 0)"]})
+
+    def test_encoders_are_never_held_back(self):
+        got = self.run_chunks([('press', 5, 0), ('release', 5, 0),
+                               ('encoder', 3, 1)], 3)
+        self.assertEqual(got, {0: ["('p', 5)", '(3, 1)']})
+
+    def test_no_dwell_drains_everything_at_once(self):
+        got = self.run_chunks([('press', 5, 0), ('release', 5, 0),
+                               ('press', 6, 0)], 3, dwell_ms=0)
+        self.assertEqual(got, {0: ["('p', 5)", "('r', 5)", "('p', 6)"]})
+
+
 @NEEDS_GUI
 class PanelLayoutTest(unittest.TestCase):
     """Both windows draw every key their device file names, on the panel,

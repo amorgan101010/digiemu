@@ -137,17 +137,17 @@ BUDGET = 100_000          # instructions per pass: one RTOS tick (PIT0 is 20 ms)
                           # how often it is called, so a smaller pass buys
                           # responsiveness almost for free.
 
-# Emulated dwell between panel state changes. _drain_input used to deliver
-# everything queued in one feed, so a press and its release reached the
-# firmware a few emulated milliseconds apart however slowly the user
-# clicked -- and a chord collapsed into an instant. A real press lasts
-# 50-200 ms. This is EMULATED milliseconds, converted to chunks against
-# the timer rate in force when the input is delivered, because the rate
-# changes at the intro hand-over. On the mk1 that rate is 4.68M instr/s, a
-# 400K-instruction chunk is 85 ms, and the dwell is one chunk. The old fixed
-# count of 16 chunks was calibrated for a 3 ms chunk and came to 1.4 s
-# there: every click waited that long for its release to land, and every
-# encoder detent turned meanwhile piled into one packet behind it.
+# Emulated dwell between one key's state changes. _drain_input used to
+# deliver everything queued in one feed, so a press and its release reached
+# the firmware a few emulated milliseconds apart however slowly the user
+# clicked. A real press lasts 50-200 ms, so a key's release (or its next
+# press) waits until this many EMULATED milliseconds have passed since that
+# key last changed, counted in instructions at the timer rate in force.
+# Other keys do not wait on it: they go one per chunk (~5 ms), in the order
+# they were pressed, so a chord lands together. Pacing across every key once
+# queued F1-F3 then 1-3 up behind each other's dwell, and the dwell, counted
+# in BUDGET-sized chunks while the real chunk was 3.2x bigger at 64M instr/s,
+# came to ~170 ms: about a second before the sixth trig lit.
 PANEL_DWELL_MS = 50
 
 
@@ -390,8 +390,7 @@ class Emulator(threading.Thread):
         # deliver-once-per-chunk behaviour, for an A/B against this one.
         self._dwell_ms = panel_dwell
         self._pits = None           # the timers, once built; see run()
-        self._chunks_since_delivery = 0
-        self._delivered_before = False
+        self._key_at = {}           # code -> stats['instrs'] when it last changed
         # Interactive running, not measurement. `fast` drops the `count=`
         # argument to emu_start, which costs 7.6x on this machine, in exchange
         # for timers landing on a basic-block boundary rather than an exact
@@ -482,16 +481,16 @@ class Emulator(threading.Thread):
         A single feed used to mean a single drain of the WHOLE queue, once
         per BUDGET chunk -- so a press and its release, however far apart the
         user actually clicked, reached the firmware a few emulated
-        milliseconds apart, and a chord collapsed into an instant. See
-        PANEL_DWELL_MS. Now a press/release (a button STATE change) is
-        held back until that much emulated time has passed since the last
-        one was delivered, so it dwells for something like a real press. Encoder
-        events are relative and bursty by nature rather than a state that can
-        be held, so they are not paced: every queued encoder event is drained
-        in the same pass as the one button transition (or on its own, if no
-        button transition is pending). Nothing queued is ever dropped, only
-        delayed until its dwell elapses. --panel-dwell 0 disables all of
-        this and restores the old drain-everything-every-chunk behaviour.
+        milliseconds apart. See PANEL_DWELL_MS. Now one press/release (a
+        button STATE change) goes per pass, in queue order, and one of a key
+        that changed less than the dwell ago waits, with everything behind
+        it: so each press lasts something like a real one, and a chord of
+        different keys still lands together. Encoder events are relative
+        and bursty by nature rather than a state that can be held, so they
+        are not paced: every queued encoder event is drained in the same
+        pass. Nothing queued is ever dropped, only delayed until its dwell
+        elapses. --panel-dwell 0 disables all of this and restores the old
+        drain-everything-every-chunk behaviour.
 
         Returns the PC because delivering input raises a vector, which moves
         it. Dropping the result would strand the run at the old address.
@@ -499,23 +498,18 @@ class Emulator(threading.Thread):
         if self.held is None:
             return pc
         paced = self._dwell_ms > 0
-        # The dwell in chunks, from the timer rate in force NOW.
         if paced:
             ips = (self._pits.sources[0].ips if self._pits is not None
                    else INSTR_PER_SEC)
-            dwell = max(1, -(-int(self._dwell_ms * ips / 1000) // BUDGET))
-        else:
-            dwell = 0
-        # Buttons wait out the dwell; encoders never do. A detent is not a
-        # state that has to be held for a realistic time, and holding it
-        # back behind a pending release is what turned a second of knob
-        # into one lump delivered late.
-        button_ok = not (paced and self._delivered_before
-                         and self._chunks_since_delivery < dwell)
-        if not button_ok:
-            self._chunks_since_delivery += 1
+            dwell = int(self._dwell_ms * ips / 1000)
+            now = self.stats['instrs']
+        # Buttons wait out their own key's dwell; encoders never do. A detent
+        # is not a state that has to be held for a realistic time, and
+        # holding it back behind a pending release is what turned a second
+        # of knob into one lump delivered late.
         out = bytearray()
         took_button = False
+        blocked = False
         deferred = []
         while self.inbox:
             kind, code, arg = self.inbox.popleft()
@@ -529,28 +523,36 @@ class Emulator(threading.Thread):
                     step = arg * getattr(self.device, 'encoder_counts', 1)
                     out += panelin.encode_encoder(
                         channel, max(-127, min(127, step)))
-            elif not button_ok or (paced and took_button):
-                deferred.append((kind, code, arg))
-            else:
-                took_button = True
-                if kind == 'press':
-                    pos = self.held.press(code)
-                    if pos is not None:
-                        out += panelin.encode_buttons(*pos)
-                elif kind == 'release':
-                    pos = self.held.release(code)
-                    if pos is not None:
-                        out += panelin.encode_buttons(*pos)
-                elif kind == 'release_all':
-                    for pos in self.held.release_all():
-                        out += panelin.encode_buttons(*pos)
+                continue
+            if paced:
+                # One transition a chunk, and none past one that must wait:
+                # FUNC let go then X pressed must not arrive as FUNC+X.
+                keys = (self.held.down_codes() if kind == 'release_all'
+                        else (code,))
+                if (blocked or took_button
+                        or any(now - self._key_at[k] < dwell
+                               for k in keys if k in self._key_at)):
+                    blocked = True
+                    deferred.append((kind, code, arg))
+                    continue
+                for k in keys:
+                    self._key_at[k] = now
+            took_button = True
+            if kind == 'press':
+                pos = self.held.press(code)
+                if pos is not None:
+                    out += panelin.encode_buttons(*pos)
+            elif kind == 'release':
+                pos = self.held.release(code)
+                if pos is not None:
+                    out += panelin.encode_buttons(*pos)
+            elif kind == 'release_all':
+                for pos in self.held.release_all():
+                    out += panelin.encode_buttons(*pos)
         for item in reversed(deferred):
             self.inbox.appendleft(item)
         if not out:
             return pc
-        if took_button:                 # an encoder-only packet starts no dwell
-            self._chunks_since_delivery = 0
-            self._delivered_before = True
         try:
             new_pc = panelin.feed(m, profile, bytes(out))
         except Exception as exc:                       # noqa: BLE001
