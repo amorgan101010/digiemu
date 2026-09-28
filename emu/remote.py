@@ -10,8 +10,8 @@ shift-click latches.
 The protocol follows Gearmulator's Machinedrum/Monomachine remote panel in
 shape only; nothing is taken from it.
 
-    GET /       the page (PAGE, below: one self-contained HTML file, so a
-                frozen build needs no data files for it)
+    GET /       the page (PAGE, below)
+    GET /skin/<product>/<asset>   the bundled, original panel artwork
     GET /ws     WebSocket. The server sends
                   'L <json>'      the layout, once the controls are named
                   binary 'S', 1024 bytes of OLED (128x64, 1 bit a pixel,
@@ -509,6 +509,24 @@ def _handler(remote):
             path = self.path.split('?', 1)[0]
             if path == '/ws':
                 return self._websocket()
+            if path.startswith('/skin/'):
+                from emu import panelskin
+                parts = path.split('/')
+                if len(parts) != 4 or parts[3] not in ('plate.png', 'keys.png', 'masks.png'):
+                    self.send_error(404)
+                    return None
+                try:
+                    body = panelskin.asset(parts[2], parts[3]).read_bytes()
+                except (ValueError, OSError):
+                    self.send_error(404)
+                    return None
+                self.send_response(200)
+                self.send_header('Content-Type', 'image/png')
+                self.send_header('Cache-Control', 'no-cache')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return None
             if path in ('/', '/index.html'):
                 body = PAGE.replace('__PRODUCT__', remote.product).encode()
                 self.send_response(200)
@@ -549,32 +567,32 @@ PAGE = r'''<!doctype html>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
-<title>__PRODUCT__ remote</title>
+<title>digiemu remote</title>
 <style>
-:root{--bg:#0b0d10;--face:#1c2027;--edge:#2c323b;--text:#c9d3e0;--dim:#6b7789;
-  --amber:#ffb638;--lit:#3f4b5c}
+:root{--bg:#0b0d10;--face:#242629;--edge:#414449;--text:#e0e2e5;--dim:#899097;
+  --amber:#ffc23d;--lit:#3f4b5c;--legend:#ffc23d}
 html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
   touch-action:none;-webkit-user-select:none;user-select:none;
   -webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;
   font-family:-apple-system,Helvetica,Arial,sans-serif}
-#stage{position:absolute;left:0;top:0;transform-origin:0 0}
-.key{position:absolute;box-sizing:border-box;border:1px solid var(--edge);
-  border-radius:7px;background:var(--face);color:var(--text);
-  display:flex;align-items:center;justify-content:center;
-  font-weight:700;font-size:13px;letter-spacing:.02em}
-.key.held{background:var(--lit);border-color:#5b6779}
-.sub{position:absolute;color:var(--dim);font-size:10px;text-align:center;
-  pointer-events:none;white-space:nowrap}
-.enc{position:absolute;border-radius:50%;box-sizing:border-box;
-  background:#171b21;border:2px solid #3c444f}
-.enc.held{border-color:var(--amber)}
-.mark{position:absolute;left:50%;top:6px;width:4px;margin-left:-2px;
-  background:var(--text);border-radius:2px;transform-origin:50% 100%}
-.dot{position:absolute;width:10px;height:10px;border-radius:50%;
-  box-sizing:border-box;border:1px solid var(--edge);background:#20252c}
+#stage{position:absolute;left:0;top:0;transform-origin:0 0;
+  background-repeat:no-repeat;overflow:hidden}
+#stage.digitone{--legend:#43b8bc}
+.key{position:absolute;cursor:pointer;touch-action:none}
+.cap-art,.cap-light{position:absolute;pointer-events:none;background-repeat:no-repeat}
+.cap-light{mask-repeat:no-repeat;-webkit-mask-repeat:no-repeat}
+.key.extra{background:var(--face);color:var(--text);border:1px solid var(--edge);
+  border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:11px}
+.key.extra.held{background:var(--legend);color:var(--bg)}
+.enc{position:absolute;border-radius:50%;box-sizing:border-box;cursor:ns-resize}
+.enc.held{outline:1px solid var(--legend)}
+.mark{position:absolute;left:50%;top:50%;width:5px;height:5px;opacity:0;
+  margin-left:-2.5px;margin-top:-2.5px;background:#f1f2f3;border-radius:50%;
+  transform:rotate(var(--angle,0deg)) translateY(var(--radius,-20px))}
+.enc.held .mark{opacity:1}
+.dot{position:absolute;border-radius:50%;background:#242316;pointer-events:none}
 #oled{position:absolute;image-rendering:pixelated;image-rendering:crisp-edges;
-  background:#0c0e12;border-radius:2px;box-shadow:0 0 0 14px #05070a,
-  0 0 0 15px #39414d}
+  background:#080b04;pointer-events:none}
 #status{position:fixed;right:12px;bottom:8px;color:var(--dim);font-size:12px}
 #status.bad{color:var(--amber)}
 #sound{position:fixed;left:12px;bottom:6px;font:inherit;font-size:12px;
@@ -592,7 +610,7 @@ html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
 'use strict';
 const stage = document.getElementById('stage');
 const status = document.getElementById('status');
-const ON = [0xe8, 0xf6, 0xff], OFF = [0x0c, 0x0e, 0x12];
+const ON = [0xe6, 0xed, 0x78], OFF = [0x08, 0x0b, 0x04];
 let ws = null, layout = null, oled = null, octx = null, img = null;
 let retry = 500;
 const keys = new Map();       // code -> {el, text, led, tint}
@@ -638,57 +656,82 @@ function el(cls, x, y, w, h) {
 }
 
 function build(lay) {
+  // Release captured touches before replacing a layout after reconnecting.
+  if (pointers.size) letGoAll(true);
   layout = lay;
   stage.textContent = '';
-  keys.clear(); dots.length = 0;
+  stage.classList.toggle('digitone', lay.product === 'Digitone');
+  keys.clear(); dots.length = 0; ledRgb = [];
   const [bx, by, bw, bh] = lay.bounds;
-  stage.style.width = bw + 'px'; stage.style.height = bh + 'px';
-  stage.dataset.ox = bx; stage.dataset.oy = by;
+  const skin = lay.skin, url = '/skin/' + skin.product + '/';
+  Object.assign(stage.style, {width:bw+'px', height:bh+'px',
+    backgroundImage:'url("'+url+'plate.png")',
+    backgroundSize:lay.canvas[0]+'px '+lay.canvas[1]+'px',
+    backgroundPosition:(-bx)+'px '+(-by)+'px'});
   const at = (x, y) => [x - bx, y - by];
   const s = lay.screen;
   oled = document.createElement('canvas');
   oled.id = 'oled'; oled.width = 128; oled.height = 64;
   const [sx, sy] = at(s.x, s.y);
-  Object.assign(oled.style, {left: sx + 'px', top: sy + 'px', width: s.w + 'px', height: s.h + 'px'});
+  Object.assign(oled.style, {left:sx+'px', top:sy+'px', width:s.w+'px', height:s.h+'px'});
   stage.appendChild(oled);
   octx = oled.getContext('2d');
   img = octx.createImageData(128, 64);
+  // Master Volume is a desktop audio control; only its pointer is displayed here.
+  const [mx,my,mr] = lay.master;
+  const dot = el('dot', mx-bx+Math.sin(Math.PI*5/18)*(mr-9)-2.5,
+                 my-by-Math.cos(Math.PI*5/18)*(mr-9)-2.5, 5, 5);
+  dot.style.background = '#f1f2f3';
   for (const c of lay.controls) {
     if (c.k === 'b') {
       const [x, y] = at(c.x, c.y);
       const k = el('key', x, y, c.w, c.h);
-      k.textContent = c.label.slice(0, 13);
-      if (c.h < 24) k.style.fontSize = '10px';
-      if (c.tint) k.style.color = c.tint;
-      if (c.sub) {
-        const t = el('sub', x - 20, y + c.h + 3, c.w + 40, 12);
-        t.textContent = c.sub;
+      k.title = c.label + (c.sub ? ' · ' + c.sub : '');
+      k.setAttribute('aria-label', k.title);
+      const row = skin.rows[c.label];
+      let art = null, light = null;
+      if (row != null) {
+        art = document.createElement('div'); light = document.createElement('div');
+        art.className = 'cap-art'; light.className = 'cap-light';
+        for (const d of [art, light]) {
+          Object.assign(d.style, {left:-skin.pad+'px', top:-skin.pad+'px',
+            width:skin.tile[0]+'px', height:skin.tile[1]+'px'});
+          k.appendChild(d);
+        }
+        art.style.backgroundImage = 'url("'+url+'keys.png")';
+        light.style.maskImage = light.style.webkitMaskImage = 'url("'+url+'masks.png")';
+      } else {
+        k.classList.add('extra'); k.textContent = c.label;
       }
-      keys.set(c.code, {el: k, led: c.led, tint: c.tint || null});
+      keys.set(c.code, {el:k, led:c.led, art, light, row});
       k.addEventListener('pointerdown', (e) => keyDown(e, c.code));
     } else if (c.k === 'e') {
       const [x, y] = at(c.x - c.r, c.y - c.r);
-      const e = el('enc', x, y, 2 * c.r, 2 * c.r);
+      const e = el('enc', x, y, 2*c.r, 2*c.r);
+      e.title = c.label + ' · drag to turn, tap to push';
       const m = document.createElement('div');
-      m.className = 'mark'; m.style.height = (c.r - 10) + 'px';
-      e.appendChild(m);
-      e._angle = 0;
+      m.className = 'mark';
+      m.style.setProperty('--radius', '-' + (c.r - 10) + 'px');
+      e.appendChild(m); e._angle = 0;
       e.addEventListener('pointerdown', (ev) => encDown(ev, c.code, c.push, e, m));
+      e.addEventListener('wheel', (ev) => {
+        ev.preventDefault();
+        send('e '+c.code+' '+(ev.deltaY < 0 ? 1 : -1)*(ev.shiftKey ? 10 : 1));
+      }, {passive:false});
     } else if (c.k === 'd') {
-      const [x, y] = at(c.x - 5, c.y - 5);
-      dots.push([el('dot', x, y, 10, 10), c.led]);
+      const [x, y] = at(c.x - 2.5, c.y - 2.5);
+      dots.push([el('dot', x, y, 5, 5), c.led]);
     }
   }
-  fit();
-  paintAll();
+  fit(); paintAll();
 }
 
 function fit() {
   if (!layout) return;
   const [, , bw, bh] = layout.bounds;
-  const k = Math.min(innerWidth / bw, innerHeight / bh);
+  const k = Math.min((innerWidth - 12) / bw, (innerHeight - 40) / bh);
   stage.style.transform = 'translate(' + (innerWidth - bw * k) / 2 + 'px,' +
-    (innerHeight - bh * k) / 2 + 'px) scale(' + k + ')';
+    (innerHeight - 32 - bh * k) / 2 + 'px) scale(' + k + ')';
 }
 addEventListener('resize', fit);
 
@@ -713,17 +756,15 @@ const lit = (i) => { const c = i == null ? null : ledRgb[i]; return c && Math.ma
 
 function paint(code) {
   const k = keys.get(code);
-  if (!k) return;
-  const s = k.el.style, rgb = lit(k.led);
-  let text = k.tint || '';
-  if (k.el.classList.contains('held') || !rgb) {
-    s.background = ''; s.borderColor = '';
-  } else {
-    const face = [0x1c, 0x20, 0x27].map((f, j) => Math.round(f + (rgb[j] - f) * 0.6));
-    s.background = hex(face); s.borderColor = hex(rgb);
-    if ((0.2126 * face[0] + 0.7152 * face[1] + 0.0722 * face[2]) / 255 > 0.45) text = '#0b0d10';
-  }
-  s.color = text;
+  if (!k || !k.art) return;
+  const held = k.el.classList.contains('held');
+  const [tw,th] = layout.skin.tile;
+  const position = (held ? -tw : 0)+'px '+(-k.row*th)+'px';
+  k.art.style.backgroundPosition = position;
+  k.light.style.maskPosition = k.light.style.webkitMaskPosition = position;
+  const rgb = lit(k.led);
+  k.light.style.backgroundColor = rgb ? hex(rgb) : 'var(--legend)';
+  k.light.style.opacity = rgb || held ? '1' : '0';
 }
 
 function paintAll() {
@@ -761,7 +802,7 @@ function move(e) {
     p.acc -= n;
     send('e ' + p.code + ' ' + n);
     p.ring._angle += n * 15;
-    p.mark.style.transform = 'rotate(' + p.ring._angle + 'deg)';
+    p.mark.style.setProperty('--angle', p.ring._angle + 'deg');
   }
 }
 

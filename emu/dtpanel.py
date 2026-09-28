@@ -10,8 +10,7 @@ Positions live here because they are a fact about the plastic, not about the
 image. Everything else still comes from the firmware: a control is placed by
 looking up its own NAME in the image's control table, so a code that moves
 between builds follows its label rather than silently landing in the wrong
-hole. A label this layout does not mention is drawn in an overflow row
-instead of being dropped.
+hole. A label this layout does not mention remains available in Extra controls.
 
 MULTITOUCH. The wire carries an 8-bit STATE BITMASK per channel, not press
 and release events, so simultaneous presses are what the hardware natively
@@ -78,8 +77,10 @@ import sys
 import time
 import tkinter as tk
 
-from emu import audioout, config, panelkeys, remote
-from emu.gui import ON, OFF, Emulator, H, W
+from emu import audioout, config, panelkeys, remote, panellayout, panelskin
+from emu.gui import Emulator, H, W
+
+ON, OFF = bytes.fromhex("e6ed78"), bytes.fromhex("080b04")
 
 # RGB for each framebuffer byte value: zero is off, anything else on.
 _PIXEL = [ON if v else OFF for v in range(256)]
@@ -129,14 +130,14 @@ def _home_monitor(pointer=None):
             if x <= px < x + w and y <= py < y + h:
                 return x, y, w, h
     return None
-SCALE = 4
-BG, FACE, EDGE = '#0b0d10', '#1c2027', '#2c323b'
-TEXT, DIM, AMBER = '#c9d3e0', '#6b7789', '#ffb638'
+SCALE = panellayout.SCALE
+BG, FACE, EDGE = '#111214', '#242629', '#414449'
+TEXT, DIM, AMBER = '#e0e2e5', '#899097', '#ffc23d'
 LIT, REC_C, PLAY_C = '#3f4b5c', '#e2483d', '#3fbf6a'
 ERR = '#ff8f8f'                   # emu/gui.py's App uses the same for errors
 # The OLED's top-left on the canvas, right of the Master Volume and
 # LEVEL/DATA knobs.
-SCREEN_X, SCREEN_Y = 168, 102
+SCREEN_X, SCREEN_Y = panellayout.SCREEN[:2]
 
 # main()'s return codes, besides 0 (closed cleanly, session saved if asked),
 # 1 (the emulator failed or halted) and 2 (the session was not saved).
@@ -160,107 +161,20 @@ def _first_line(text, limit=160):
     line = next((s.strip() for s in str(text).splitlines() if s.strip()), '')
     return line if len(line) <= limit else line[:limit - 3] + '...'
 
-# Key LEDs. An unlit key is still sent a colour -- palette 02, (1,1,1) of 31,
-# the backlight glow -- so anything this dim is drawn as off. A lit key's face
-# is the LED colour mixed into the key colour, like a backlit key cap.
-LED_OFF = '#20252c'
-LED_DARK = 24          # of 255: brighter than this counts as lit
-LED_MIX = 0.6
-
-
-def _mix(face, rgb, t):
-    base = [int(face[i:i + 2], 16) for i in (1, 3, 5)]
-    return tuple(round(b + (c - b) * t) for b, c in zip(base, rgb))
+# Very dim firmware RGB values are the unlit backlight state.
+LED_DARK = 24
 
 
 def _hex(rgb):
     return '#%02x%02x%02x' % tuple(rgb)
 
 
-def _luma(rgb):
-    r, g, b = rgb
-    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
-
-# Firmware label -> (x, y, w, h, secondary caption, tint).
-BUTTONS = {
-    # LEFT column: FUNC on top (yellow modifier), then BANK, PTN, TRK
-    # vertically. The 100px width leaves room for the secondary caption
-    # below each label.
-    'FUNC': (30, 400, 100, 40, None, AMBER),
-    'BANK': (30, 460, 100, 40, 'Mute Mode', None),
-    'PTN': (30, 540, 100, 40, 'Pattern Settings', None),
-    'TRK': (30, 620, 100, 40, 'Track Settings', None),
-    # Function menu row at y=400. 10 items in one row:
-    # SONG / GLOBAL / SAMPLE / TEMPO (the four firmware menu items) and
-    # TRIG / SRC / FLTR / AMP / LFO (the five page buttons), with PAGE at
-    # the far right. 92 wide each, 8px gaps.
-    # The key the panel-test table calls PATTERN MENU is SONG on OS 1.5x:
-    # held, the firmware shows "SONG MODE OFF". Named for what it does.
-    'SONG': (140, 400, 92, 40, None, None),
-    'GLOBAL': (240, 400, 92, 40, None, None),
-    'SAMPLE': (340, 400, 92, 40, None, None),
-    'TEMPO': (440, 400, 92, 40, None, None),
-    'TRIG': (540, 400, 92, 40, 'Quantize', None),
-    'SRC': (640, 400, 92, 40, 'Assign', None),
-    'FLTR': (740, 400, 92, 40, 'Fltr Setup', None),
-    'AMP': (840, 400, 92, 40, 'Amp Env', None),
-    'LFO': (940, 400, 92, 40, 'LFO Setup', None),
-    'PAGE': (1040, 400, 92, 40, None, None),
-    # transport (under the function menu row, left half)
-    'STOP': (150, 460, 76, 46, None, None),
-    'PLAY': (236, 460, 76, 46, None, PLAY_C),
-    'RECORD': (322, 460, 76, 46, None, REC_C),
-    # confirm (stacked vertically, to the right of the transport cluster),
-    # far enough apart that YES's caption clears NO
-    'YES': (600, 460, 76, 40, 'Reload', None),
-    'NO': (600, 526, 76, 40, 'tTime', None),
-    # cursor arrows: UP aligned with the transport row; LEFT/DOWN/RIGHT in
-    # a row below it (a +/- cross shape). The cluster sits over trig key 7
-    # (DOWN centered at x=847 = trig 7's center), with LEFT over trig 6
-    # and RIGHT over trig 8.
-    'UP': (819, 464, 56, 40, None, None),
-    'LEFT': (763, 510, 56, 40, None, None),
-    'DOWN': (819, 510, 56, 40, None, None),
-    'RIGHT': (875, 510, 56, 40, None, None),
-    # The encoder PUSH switches. Shifted right by 130 with the encoders so
-    # they sit under each one and double as its label rather than being
-    # exiled to an overflow row.
-    'A': (726, 190, 48, 18, None, None),
-    'B': (830, 190, 48, 18, None, None),
-    'C': (934, 190, 48, 18, None, None),
-    'D': (1038, 190, 48, 18, None, None),
-    'E': (726, 312, 48, 18, None, None),
-    'F': (830, 312, 48, 18, None, None),
-    'G': (934, 312, 48, 18, None, None),
-    'H': (1038, 312, 48, 18, None, None),
-    # LEVEL/DATA push: under the top-left Level/Data knob.
-    'LEVEL/DATA': (54, 312, 72, 18, 'Sound Browser', None),
-}
-# sixteen trig keys, two rows of eight
-for _i in range(16):
-    BUTTONS[str(_i + 1)] = (150 + (_i % 8) * 108, 598 + (_i // 8) * 82,
-                            98, 72, None, None)
-
-# Firmware label -> (centre x, centre y, radius).
-# Shifted right by 130 (same shift as the screen) so the encoder area sits
-# clear of the Master Volume and Level/Data knobs at the top-left.
-ENCODERS = {
-    'A': (750, 150, 34), 'B': (854, 150, 34),
-    'C': (958, 150, 34), 'D': (1062, 150, 34),
-    'E': (750, 272, 34), 'F': (854, 272, 34),
-    'G': (958, 272, 34), 'H': (1062, 272, 34),
-    # Top-left, under Master Volume. Slightly smaller than the A-H knobs.
-    'LEVEL/DATA': (90, 280, 28),
-}
-
-# Master Volume: the top-left knob, (centre x, centre y, radius). The
-# hardware's volume pot is analog, not a control the firmware reads, so the
-# panel turns it into a software gain on the live output instead
-# (_turn_master_volume).
-MASTER_VOLUME = (90, 195, 36)
-
-
-PANEL_W, PANEL_H = 1160, 790      # the drawn control surface
+# One geometry source drives the native UI, generated artwork and browser.
+TRIG_POSITIONS = panellayout.trig_positions('Digitakt')
+BUTTONS = panellayout.buttons('Digitakt')
+ENCODERS = panellayout.ENCODERS
+MASTER_VOLUME = panellayout.MASTER_VOLUME
+PANEL_W, PANEL_H = panellayout.WIDTH, panellayout.HEIGHT
 
 
 def master_volume_angle(value, top):
@@ -285,9 +199,8 @@ class DigitaktPanel(tk.Tk):
     # machinery: the emulator thread, input, LEDs, audio and shutdown are
     # shared.
     PRODUCT = 'Digitakt'
-    TITLE = 'digiemu — Digitakt mk1 emulator (unofficial)'
-    SUBTITLE = ('Digitakt mk1 emulator · unofficial, not affiliated with '
-                'Elektron')
+    TITLE = 'digiemu — Sampler'
+    SUBTITLE = 'Drum computer & sampler · mk1 emulator'
     BUTTONS = BUTTONS
     ENCODERS = ENCODERS
     PANEL_W, PANEL_H = PANEL_W, PANEL_H
@@ -295,6 +208,8 @@ class DigitaktPanel(tk.Tk):
     SAMPLES = True                       # the LOAD SAMPLES button
     KEYS = panelkeys.DIGITAKT            # computer key -> panel label
     REMOTE_PORT = 8794                   # REMOTE's first port (emu/remote.py)
+    LEGEND = AMBER
+    SCREEN_LEGEND = '8 Voice Digital Drum Computer & Sampler'
 
     def __init__(self, snapshot, syx=None, audio=True, save_on_exit=None,
                  app=False):
@@ -306,7 +221,15 @@ class DigitaktPanel(tk.Tk):
         self.canvas = tk.Canvas(self, width=self.PANEL_W,
                                 height=self.PANEL_H, bg=BG,
                                 highlightthickness=0)
-        self.canvas.pack(fill='both', expand=True)
+        self.rowconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1)
+        self.canvas.grid(row=0, column=0, sticky='nsew')
+        self._vscroll = tk.Scrollbar(self, orient='vertical', command=self.canvas.yview)
+        self._hscroll = tk.Scrollbar(self, orient='horizontal', command=self.canvas.xview)
+        self.canvas.configure(scrollregion=(0, 0, self.PANEL_W, self.PANEL_H),
+                              xscrollcommand=self._hscroll.set,
+                              yscrollcommand=self._vscroll.set)
+        self.bind('<Configure>', self._fit_scrollbars)
 
         self.emu = Emulator(snapshot, syx=syx, audio=audio,
                             save_on_exit=save_on_exit,
@@ -321,8 +244,7 @@ class DigitaktPanel(tk.Tk):
         self.latched = set()     # subset of held that survives mouse-up
         self.codes = {}          # firmware label -> button code
         self.enc_codes = {}      # firmware label -> encoder code
-        self.items = {}          # code -> (rect, text)
-        self.text_fill = {}      # code -> the caption's own colour
+        self.items = {}          # code -> (cap sprite, light sprite)
         self.enc_items = {}      # code -> [ring, mark, angle]
         self._named = False
         self.led_of = {}         # button code -> LED id
@@ -375,9 +297,11 @@ class DigitaktPanel(tk.Tk):
         mon = _home_monitor(self.winfo_pointerxy())
         if mon:
             mx, my, mw, mh = mon
+            pw, ph = min(pw, mw - 32), min(ph, mh - 80)
             x = mx + max(0, (mw - pw) // 2)
             y = my + max(0, (mh - ph) // 2)
         else:
+            pw, ph = min(pw, sw - 32), min(ph, sh - 80)
             x = max(0, min(80, sw - pw))
             y = max(0, min(60, sh - ph))
         self.geometry('%dx%d+%d+%d' % (pw, ph, x, y))
@@ -398,6 +322,25 @@ class DigitaktPanel(tk.Tk):
             self.remote_toggle(save=False)
         self.after(50, self.tick)
 
+    def _fit_scrollbars(self, event):
+        """Keep every control reachable on smaller desktops or resized windows."""
+        if event.widget is not self:
+            return
+        width, height = event.width, event.height
+        vertical, horizontal = height < self.PANEL_H, width < self.PANEL_W
+        horizontal |= vertical and width - self._vscroll.winfo_reqwidth() < self.PANEL_W
+        vertical |= horizontal and height - self._hscroll.winfo_reqheight() < self.PANEL_H
+        if vertical:
+            self._vscroll.grid(row=0, column=1, sticky='ns')
+        else:
+            self._vscroll.grid_remove()
+            self.canvas.yview_moveto(0)
+        if horizontal:
+            self._hscroll.grid(row=1, column=0, sticky='ew')
+        else:
+            self._hscroll.grid_remove()
+            self.canvas.xview_moveto(0)
+
     # ---------------------------------------------------------------- chrome
     def _rr(self, x, y, w, h, r, **kw):
         """A rounded rectangle; Tk's canvas has no primitive for one."""
@@ -408,84 +351,68 @@ class DigitaktPanel(tk.Tk):
 
     def _draw_chrome(self):
         c = self.canvas
-        self._rr(16, 14, 1128, 58, 10, fill='#101318', outline=EDGE)
-        # The project's own name, not the product's branding: no logo mark,
-        # wordmark or tagline from the hardware.
-        # The subtitle sits UNDER the wordmark: beside it, Windows' wider
-        # Helvetica ran it into the AUDIO status at x=536.
-        c.create_text(46, 35, text='digiemu', fill='#f2f5f9',
-                      font=('Helvetica', 20, 'bold'), anchor='w')
-        c.create_text(48, 60, text=self.SUBTITLE, fill=DIM,
-                      font=('Helvetica', 9), anchor='w')
+        self.skin = panelskin.Skin(self, self.PRODUCT)
+        c.create_image(0, 0, image=self.skin.plate, anchor='nw')
+        self.cap_items = {}
+        self.key_labels = {}
+        self.enc_push_items = {}
+        self.extra_items = {}
+        pad = self.skin.meta['pad']
+        for label in self.skin.meta['keys']:
+            x, y = self.BUTTONS[label][:2]
+            cap = c.create_image(x - pad, y - pad,
+                                 image=self.skin.cap(label), anchor='nw')
+            light = c.create_image(x - pad, y - pad,
+                                   image=self.skin.blank, anchor='nw')
+            self.cap_items[label] = (cap, light)
+        c.create_text(24, 21, text='digiemu', fill=TEXT,
+                      font=('Helvetica', -20, 'bold'), anchor='w')
+        c.create_text(24, 48, text=self.SUBTITLE, fill=DIM,
+                      font=('Helvetica', -10), anchor='w')
         sx, sy = self.SCREEN_X, self.SCREEN_Y
-        self._rr(sx - 14, 88, W * SCALE + 28, H * SCALE + 28, 8,
-                 fill='#05070a', outline='#39414d')
         c.create_image(sx, sy, image=self.big, anchor='nw')
-        # Covers the screen when the emulator fails; see _show_failure.
         self.err_box = c.create_rectangle(
             sx, sy, sx + W * SCALE, sy + H * SCALE,
-            fill='#05070a', outline='', state='hidden')
+            fill='#080b04', outline='', state='hidden')
         self.err_text = c.create_text(
             sx + 14, sy + 14, text='', fill=ERR,
-            font=('Helvetica', 10), anchor='nw', width=W * SCALE - 28,
-            state='hidden')
-        self.status = c.create_text(24, 768, text='booting...', fill=DIM,
-                                    font=('Helvetica', 10), anchor='w')
-        clear = c.create_text(1144, 768, text='clear latched', fill=DIM,
-                              font=('Helvetica', 10), anchor='e')
+            font=('Helvetica', -12), anchor='nw',
+            width=W * SCALE - 28, state='hidden')
+        self.status = c.create_text(24, 868, text='Starting…', fill=DIM,
+                                     font=('Helvetica', -11), anchor='w', width=790)
+        clear = c.create_text(976, 868, text='clear latched', fill=DIM,
+                               font=('Helvetica', -11), anchor='e')
         c.tag_bind(clear, '<Button-1>', lambda _e: self.clear_latched())
+        c.bind('<ButtonRelease-1>', self._release_pointer)
         self._draw_audio_controls()
 
-    # ----------------------------------------------------------------- audio
-    # The emulator records the audio output as it renders it -- far slower
-    # than real time (see [audio] in devices/digitakt.toml) -- and these play
-    # the recording back at the right rate: trigger a sound, let it render,
-    # then PLAY.
     def _draw_audio_controls(self):
         c = self.canvas
-        # From x=240, past the wordmark: at 536 the live status ('AUDIO
-        # LIVE · 110 ms buffered · ...') ran under the MUTE button.
-        self.audio_text = c.create_text(240, 36, text='AUDIO  starting',
-                                        fill=DIM, font=('Helvetica', 10),
-                                        anchor='w')
+        self.audio_text = c.create_text(132, 22, text='AUDIO  starting',
+                                        fill=DIM, font=('Helvetica', -11),
+                                        anchor='w', width=304)
         self.audio_btns = {}
-        for name, x, w, fn in (('MUTE', 708, 58, self.audio_toggle_mute),
-                               ('PLAY', 772, 58, self.audio_play),
-                               ('CLEAR', 836, 58, self.audio_clear),
-                               ('SAVE WAV', 900, 72, self.audio_save)):
-            rect = self._rr(x, 30, w, 26, 6, fill=FACE, outline=EDGE)
-            txt = c.create_text(x + w / 2, 43, text=name, fill=TEXT,
-                                font=('Helvetica', 9, 'bold'))
+        actions = [('MUTE', 58, self.audio_toggle_mute),
+                   ('PLAY', 48, self.audio_play),
+                   ('CLEAR', 50, self.audio_clear),
+                   ('SAVE WAV', 70, self.audio_save),
+                   ('MIDI', 46, self.midi_menu),
+                   ('REMOTE', 64, self.remote_toggle)]
+        if self.SAMPLES:
+            actions.append(('LOAD SAMPLES', 96, self.load_samples))
+        x = 450
+        for name, w, fn in actions:
+            rect = self._rr(x, 10, w, 26, 5, fill=FACE, outline=EDGE)
+            txt = c.create_text(x + w / 2, 23, text=name, fill=TEXT,
+                                font=('Helvetica', -10, 'bold'))
             for item in (rect, txt):
                 c.tag_bind(item, '<Button-1>', lambda _e, f=fn: f())
             self.audio_btns[name] = (rect, txt)
-        # Every product has the knob and MIDI; only the Digitakt has LOAD
-        # SAMPLES.
+            x += w + 6
+        self.remote_btn = self.audio_btns['REMOTE']
+        self.remote_text = c.create_text(976, 48, text='', fill=AMBER,
+                                         font=('Helvetica', -10), anchor='e')
         self._draw_master_volume()
-        # MIDI and LOAD SAMPLES end at 1136, inside the header box (x+w =
-        x, w = 978, 56
-        rect = self._rr(x, 30, w, 26, 6, fill=FACE, outline=EDGE)
-        txt = c.create_text(x + w / 2, 43, text='MIDI', fill=TEXT,
-                            font=('Helvetica', 9, 'bold'))
-        for item in (rect, txt):
-            c.tag_bind(item, '<Button-1>', lambda _e: self.midi_menu())
-        x, w = 630, 66
-        rect = self._rr(x, 30, w, 26, 6, fill=FACE, outline=EDGE)
-        txt = c.create_text(x + w / 2, 43, text='REMOTE', fill=TEXT,
-                            font=('Helvetica', 9, 'bold'))
-        for item in (rect, txt):
-            c.tag_bind(item, '<Button-1>', lambda _e: self.remote_toggle())
-        self.remote_btn = (rect, txt)
-        self.remote_text = c.create_text(x + w, 64, text='', fill=AMBER,
-                                         font=('Helvetica', 9), anchor='e')
-        if not self.SAMPLES:
-            return
-        x, w = 1040, 96
-        rect = self._rr(x, 30, w, 26, 6, fill=FACE, outline=EDGE)
-        txt = c.create_text(x + w / 2, 43, text='LOAD SAMPLES', fill=TEXT,
-                            font=('Helvetica', 9, 'bold'))
-        for item in (rect, txt):
-            c.tag_bind(item, '<Button-1>', lambda _e: self.load_samples())
 
     def _draw_master_volume(self):
         """Master Volume: the top-left knob. The hardware's volume pot is
@@ -494,15 +421,10 @@ class DigitaktPanel(tk.Tk):
         host device."""
         c = self.canvas
         mv_x, mv_y, mv_r = MASTER_VOLUME
-        self._mv_oval = c.create_oval(
-            mv_x - mv_r, mv_y - mv_r, mv_x + mv_r, mv_y + mv_r,
-            fill='#171b21', outline='#3c444f', width=2)
-        # Indicator line (stored so it can be redrawn as the knob turns).
+        self._mv_oval = self._knob_target(mv_x, mv_y, mv_r)
         self._mv_mark = c.create_line(
-            mv_x, mv_y - mv_r + 6, mv_x, mv_y - 4,
-            fill=TEXT, width=3)
-        c.create_text(mv_x, mv_y + mv_r + 11, text='Master Volume',
-                      fill=DIM, font=('Helvetica', 8))
+            mv_x, mv_y - mv_r + 11, mv_x, mv_y - mv_r + 7,
+            fill='#f1f2f3', width=4, capstyle='round')
         # 0.0 (silent) to 1.0 (unity); the knob goes a bit past unity with
         # clipping at the host.
         self._mv_value = 1.0
@@ -569,7 +491,7 @@ class DigitaktPanel(tk.Tk):
             return
         from tkinter import ttk
         win = self._midi_win = tk.Toplevel(self)
-        win.title('%s MIDI' % self.PRODUCT)
+        win.title('digiemu MIDI')
         win.configure(bg=BG, padx=14, pady=12)
         win.transient(self)
         win.resizable(False, False)
@@ -731,106 +653,115 @@ class DigitaktPanel(tk.Tk):
 
     # --------------------------------------------------------------- widgets
     def _bind_button(self, item, code):
-        self.canvas.tag_bind(item, '<ButtonPress-1>',
-                             lambda e, k=code: self.press(k, e))
-        self.canvas.tag_bind(item, '<ButtonRelease-1>',
-                             lambda _e, k=code: self.release(k))
+        self.canvas.tag_bind(item, '<ButtonPress-1>', self._press_at)
+        self.canvas.tag_bind(item, '<ButtonRelease-1>', self._release_pointer)
+
+    def _press_at(self, event):
+        # Sprite shadows overlap neighboring hit areas. Resolve the actual cap,
+        # not the rectangular bounds of its transparent image tile.
+        x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+        for code, label in self.key_labels.items():
+            bx, by, w, h = self.BUTTONS[label][:4]
+            if bx <= x < bx + w and by <= y < by + h:
+                self._pointer_code = code
+                self.press(code, event)
+                break
+
+    def _release_pointer(self, _event=None):
+        code = getattr(self, '_pointer_code', None)
+        if code is not None:
+            self.release(code)
+            self._pointer_code = None
+
+    def _knob_target(self, x, y, r):
+        # A plate crop makes the entire knob clickable without flattening its art.
+        image = self.skin.crop(x - r, y - r - 3, 2 * r, 2 * r + 8)
+        return self.canvas.create_image(x - r, y - r - 3, image=image, anchor='nw')
 
     def _build_controls(self):
-        """Draw every control, once the firmware's own names are known."""
+        """Attach firmware codes to the shared skin's physical controls."""
         c = self.canvas
         overflow = []
         for label, code in sorted(self.codes.items()):
-            spec = self.BUTTONS.get(label)
-            if spec is None:
+            if label in self.ENCODERS:
+                continue
+            if label not in self.cap_items:
                 overflow.append((label, code))
                 continue
-            x, y, w, h, sub, tint = spec
-            rect = self._rr(x, y, w, h, 7, fill=FACE, outline=EDGE)
-            txt = c.create_text(x + w / 2, y + h / 2, text=label[:13],
-                                fill=tint or TEXT,
-                                font=('Helvetica', 10, 'bold'))
-            if sub:
-                c.create_text(x + w / 2, y + h + 11, text=sub, fill=DIM,
-                              font=('Helvetica', 8))
-            self.items[code] = (rect, txt)
-            self.text_fill[code] = tint or TEXT
+            self.items[code] = self.cap_items[label]
+            self.key_labels[code] = label
+            x, y, w, h, sub, tint = self.BUTTONS[label]
             self.layout.append({'k': 'b', 'code': code, 'label': label,
                                 'x': x, 'y': y, 'w': w, 'h': h, 'sub': sub,
-                                'tint': tint})
-            self._bind_button(rect, code)
-            self._bind_button(txt, code)
-
-        # Anything the faceplate map does not mention still gets a key, so a
-        # build with an extra control is usable rather than silently short.
-        # Placed in the empty block right of the transport, NOT at y=700:
-        # that is where the second row of trig keys sits, and a ten-wide row
-        # there drew straight over trigs 9-16 and made them unclickable.
-        for i, (label, code) in enumerate(overflow):
-            x, y = 352 + (i % 5) * 112, 458 + (i // 5) * 34
-            rect = self._rr(x, y, 102, 30, 6, fill=FACE, outline=EDGE)
-            txt = c.create_text(x + 51, y + 15, text=label[:14], fill=TEXT,
-                                font=('Helvetica', 8))
-            self.items[code] = (rect, txt)
-            self.text_fill[code] = TEXT
-            self.layout.append({'k': 'b', 'code': code, 'label': label,
-                                'x': x, 'y': y, 'w': 102, 'h': 30,
-                                'sub': None, 'tint': None})
-            self._bind_button(rect, code)
-            self._bind_button(txt, code)
-
-        # Key LEDs light the key itself; the four pattern-page LEDs have no
-        # key and sit in a row under PAGE, page 1 on the left.
+                                'tint': tint, 'face': panellayout.face(self.PRODUCT, label)})
+            for item in self.items[code]:
+                self._bind_button(item, code)
+        if overflow:
+            link = c.create_text(460, 48, text='Extra controls', fill=DIM,
+                                  font=('Helvetica', -10), anchor='w')
+            c.tag_bind(link, '<Button-1>', lambda _e: self._extra_controls(overflow))
+            for i, (label, code) in enumerate(overflow):
+                self.layout.append({'k': 'b', 'code': code, 'label': label,
+                                    'x': 40 + (i % 10) * 92,
+                                    'y': 868 + (i // 10) * 40,
+                                    'w': 84, 'h': 30, 'sub': None, 'tint': None})
         dev = getattr(self.emu, 'device', None)
         self.led_of = {code: led for led, code in
                        (getattr(dev, 'leds', None) or {}).items()}
-        page = self.BUTTONS['PAGE']
-        for i, led in enumerate(getattr(dev, 'page_leds', ()) or ()):
-            # The 1/4..4/4 dots sit just above PAGE (not below, as before):
-            # the picture places them there, with PAGE under them.
-            cx, cy = page[0] + 13 + i * 22, page[1] - 12
-            dot = c.create_oval(cx - 5, cy - 5, cx + 5, cy + 5,
-                                fill=LED_OFF, outline=EDGE)
+        page_leds = getattr(dev, 'page_leds', ()) or ()
+        positions = panellayout.page_lights(self.BUTTONS['PAGE'], len(page_leds))
+        for led, (cx, cy) in zip(page_leds, positions):
+            dot = c.create_oval(cx - 2.5, cy - 2.5, cx + 2.5, cy + 2.5,
+                                fill='#242316', outline='')
             self.page_items.append((led, dot))
             self.layout.append({'k': 'd', 'led': led, 'x': cx, 'y': cy})
         self._led_version = -1
-
         for label, code in self.enc_codes.items():
             spec = self.ENCODERS.get(label)
             if spec is None:
                 continue
             x, y, r = spec
-            ring = c.create_oval(x - r, y - r, x + r, y + r, fill='#171b21',
-                                 outline='#3c444f', width=2)
-            mark = c.create_line(x, y - r + 6, x, y - 4, fill=TEXT, width=3)
-            # No label drawn here: the push-switch button below the knob
-            # carries the firmware's own name for it, so drawing one too
-            # would print it twice.
+            target = self._knob_target(x, y, r)
+            ring = c.create_oval(x - r, y - r, x + r, y + r,
+                                  outline=self.LEGEND, width=1, state='hidden')
+            mark = c.create_line(x, y - r + 11, x, y - r + 7,
+                                 fill='#f1f2f3', width=3, capstyle='round', state='hidden')
+            push = self.codes.get(label)
+            if push is not None:
+                self.enc_push_items[push] = ring
             self.enc_items[code] = [ring, mark, 0.0]
             self.layout.append({'k': 'e', 'code': code, 'label': label,
                                 'x': x, 'y': y, 'r': r})
-            for item in (ring, mark):
-                # Tk reports the wheel differently per platform: a signed
-                # delta on Windows and macOS, buttons 4 and 5 on X11. A
-                # canvas tag_bind is stricter than a widget bind and REFUSES
-                # <MouseWheel> outright on X11 ("requested illegal events"),
-                # so it is attempted rather than assumed.
+            for item in (target, ring, mark):
                 try:
                     c.tag_bind(item, '<MouseWheel>',
-                               lambda e, k=code: self.turn(
-                                   k, 1 if e.delta > 0 else -1, e))
+                               lambda e, k=code: self.turn(k, 1 if e.delta > 0 else -1, e))
                 except tk.TclError:
                     pass
-                c.tag_bind(item, '<Button-4>',
-                           lambda e, k=code: self.turn(k, 1, e))
-                c.tag_bind(item, '<Button-5>',
-                           lambda e, k=code: self.turn(k, -1, e))
-                # Dragging works everywhere and needs no wheel at all.
-                c.tag_bind(item, '<ButtonPress-1>',
-                           lambda e, k=code: self._drag_start(k, e))
-                c.tag_bind(item, '<B1-Motion>',
-                           lambda e, k=code: self._drag(k, e))
+                c.tag_bind(item, '<Button-4>', lambda e, k=code: self.turn(k, 1, e))
+                c.tag_bind(item, '<Button-5>', lambda e, k=code: self.turn(k, -1, e))
+                c.tag_bind(item, '<ButtonPress-1>', lambda e, k=code: self._drag_start(k, e))
+                c.tag_bind(item, '<B1-Motion>', lambda e, k=code: self._drag(k, e))
+                c.tag_bind(item, '<ButtonRelease-1>',
+                           lambda e, k=code, name=label: self._drag_end(k, name, e))
         self.remote_layout = self._remote_layout()
+
+    def _extra_controls(self, controls):
+        if getattr(self, '_extra_win', None) is not None and self._extra_win.winfo_exists():
+            self._extra_win.lift()
+            return
+        win = self._extra_win = tk.Toplevel(self)
+        win.title('Extra controls')
+        win.configure(bg=BG, padx=12, pady=12)
+        win.transient(self)
+        for i, (label, code) in enumerate(controls):
+            button = tk.Label(win, text=label, bg=FACE, fg=TEXT, padx=12, pady=8)
+            button.grid(row=i // 4, column=i % 4, padx=3, pady=3)
+            button.bind('<ButtonPress-1>', lambda e, k=code: self.press(k, e))
+            button.bind('<ButtonRelease-1>', lambda _e, k=code: self.release(k))
+            self.extra_items[code] = button
+            self._paint(code)
+
     def _remote_layout(self):
         """-> what emu/remote.py serves: every control as placed above, the
         OLED's place, and the LEDs in the order its state frames carry
@@ -847,26 +778,21 @@ class DigitaktPanel(tk.Tk):
                 c['led'] = index[c['led']]
             else:                    # tap a knob on the page to push it
                 c['push'] = self.codes.get(c['label'])
+                spec = self.BUTTONS.get(c['label'])
+                c['sub'] = spec[4] if spec else None
             controls.append(c)
         sx, sy = self.SCREEN_X, self.SCREEN_Y
-        boxes = [(sx - 16, sy - 16, sx + W * SCALE + 16,
-                  sy + H * SCALE + 16)]
-        for c in controls:
-            if c['k'] == 'b':
-                boxes.append((c['x'], c['y'], c['x'] + c['w'],
-                              c['y'] + c['h'] + (18 if c['sub'] else 0)))
-            elif c['k'] == 'e':
-                boxes.append((c['x'] - c['r'], c['y'] - c['r'],
-                              c['x'] + c['r'], c['y'] + c['r']))
-            else:
-                boxes.append((c['x'] - 5, c['y'] - 5, c['x'] + 5, c['y'] + 5))
-        x0 = min(b[0] for b in boxes) - 16
-        y0 = min(b[1] for b in boxes) - 16
-        x1 = max(b[2] for b in boxes) + 16
-        y1 = max(b[3] for b in boxes) + 16
-        return {'product': self.PRODUCT, 'controls': controls, 'leds': leds,
+        x0, y0, width, height = panellayout.BODY
+        bottom = max([y0 + height] + [c['y'] + c['h'] + 12
+                     for c in controls if c['k'] == 'b'])
+        return {'product': self.PRODUCT, 'screen_legend': self.SCREEN_LEGEND,
+                'controls': controls, 'leds': leds,
                 'screen': {'x': sx, 'y': sy, 'w': W * SCALE, 'h': H * SCALE},
-                'bounds': [x0, y0, x1 - x0, y1 - y0]}
+                'skin': self.skin.public_meta(),
+                'canvas': [panellayout.WIDTH, panellayout.HEIGHT],
+                'master': list(MASTER_VOLUME),
+                'bounds': [x0, y0, width, bottom - y0]}
+
     def _remote_saved(self):
         """-> remote.json's settings: {'enabled': bool, 'port': int}."""
         try:
@@ -984,9 +910,17 @@ class DigitaktPanel(tk.Tk):
     def _drag_start(self, code, event):
         self._drag_y = event.y
         self._drag_acc = 0.0
+        self._drag_code = code
+        self._drag_origin = (event.x, event.y)
+        self._drag_moved = False
 
     def _drag(self, code, event):
         """Vertical drag turns an encoder: up is clockwise, 6px per detent."""
+        if code != getattr(self, '_drag_code', None):
+            return
+        ox, oy = self._drag_origin
+        if abs(event.x - ox) > 4 or abs(event.y - oy) > 4:
+            self._drag_moved = True
         dy = getattr(self, '_drag_y', event.y) - event.y
         self._drag_y = event.y
         self._drag_acc = getattr(self, '_drag_acc', 0.0) + dy / 6.0
@@ -994,6 +928,18 @@ class DigitaktPanel(tk.Tk):
         if step:
             self._drag_acc -= step
             self.turn(code, step)
+
+    def _drag_end(self, code, label, event):
+        """A click pushes an encoder; a drag turns it."""
+        if code != getattr(self, '_drag_code', None):
+            return
+        moved = self._drag_moved
+        self._drag_code = None
+        if not moved:
+            push = self.codes.get(label)
+            if push is not None:
+                self.press(push, event)
+                self.release(push)
 
     def turn(self, code, step, event=None):
         if event is not None and event.state & 0x0001:
@@ -1007,14 +953,19 @@ class DigitaktPanel(tk.Tk):
         # firmware's own step per detent is velocity-scaled, so the ring is
         # a record of detents sent, not of the value.
         state[2] = angle + step * (2 * math.pi / 24)
+        self.canvas.itemconfigure(mark, state='normal')
+        timers = self.__dict__.setdefault('_encoder_timers', {})
+        if code in timers:
+            self.after_cancel(timers[code])
+        timers[code] = self.after(350, lambda: self.canvas.itemconfigure(mark, state='hidden'))
         x0, y0, x1, y1 = self.canvas.coords(ring)
         cx, cy, r = (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 2
         a = state[2] - math.pi / 2
         self.canvas.coords(mark,
-                           cx + math.cos(a) * (r - 22),
-                           cy + math.sin(a) * (r - 22),
-                           cx + math.cos(a) * (r - 6),
-                           cy + math.sin(a) * (r - 6))
+                           cx + math.cos(a) * (r - 11),
+                           cy + math.sin(a) * (r - 11),
+                           cx + math.cos(a) * (r - 7),
+                           cy + math.sin(a) * (r - 7))
 
     # ------------------------------------------------------ Master Volume knob
     # The hardware's volume pot is analog (not in the firmware's code
@@ -1030,10 +981,10 @@ class DigitaktPanel(tk.Tk):
         a = master_volume_angle(self._mv_value, self._MV_MAX) - math.pi / 2
         self.canvas.coords(
             self._mv_mark,
-            mv_x + math.cos(a) * (mv_r - 22),
-            mv_y + math.sin(a) * (mv_r - 22),
-            mv_x + math.cos(a) * (mv_r - 6),
-            mv_y + math.sin(a) * (mv_r - 6))
+            mv_x + math.cos(a) * (mv_r - 11),
+            mv_y + math.sin(a) * (mv_r - 11),
+            mv_x + math.cos(a) * (mv_r - 7),
+            mv_y + math.sin(a) * (mv_r - 7))
 
     def _turn_master_volume(self, step, event=None):
         if event is not None and event.state & 0x0001:
@@ -1066,25 +1017,24 @@ class DigitaktPanel(tk.Tk):
         return rgb
 
     def _paint(self, code):
+        pressed = code in self.held or code in self.latched
+        ring = self.enc_push_items.get(code)
+        if ring is not None:
+            self.canvas.itemconfigure(ring, state='normal' if pressed else 'hidden')
+        extra = self.extra_items.get(code)
+        if extra is not None and extra.winfo_exists():
+            extra.configure(bg=self.LEGEND if pressed else FACE,
+                            fg=BG if pressed else TEXT)
         item = self.items.get(code)
-        if not item:
+        if item is None:
             return
-        rect, txt = item
-        text = self.text_fill.get(code, TEXT)
+        cap, light = item
+        label = self.key_labels[code]
         rgb = self._led_rgb(self.led_of.get(code))
-        if code in self.latched:
-            self.canvas.itemconfigure(rect, fill=AMBER, outline=AMBER)
-        elif code in self.held:
-            self.canvas.itemconfigure(rect, fill=LIT, outline='#5b6779')
-        elif rgb is not None:
-            face = _mix(FACE, rgb, LED_MIX)
-            self.canvas.itemconfigure(rect, fill=_hex(face),
-                                      outline=_hex(rgb))
-            if _luma(face) > 0.45:
-                text = BG
-        else:
-            self.canvas.itemconfigure(rect, fill=FACE, outline=EDGE)
-        self.canvas.itemconfigure(txt, fill=text)
+        if pressed and rgb is None:
+            rgb = tuple(int(self.LEGEND[i:i + 2], 16) for i in (1, 3, 5))
+        self.canvas.itemconfigure(cap, image=self.skin.cap(label, pressed))
+        self.canvas.itemconfigure(light, image=self.skin.light(label, rgb, pressed))
 
     def _draw_leds(self):
         """Repaint whatever the firmware's LED stream changed."""
@@ -1100,7 +1050,7 @@ class DigitaktPanel(tk.Tk):
         for led, dot in self.page_items:
             rgb = self._led_rgb(led)
             self.canvas.itemconfigure(
-                dot, fill=_hex(rgb) if rgb else LED_OFF)
+                dot, fill=_hex(rgb) if rgb else '#242316')
 
     # --------------------------------------------------------------- samples
     def load_samples(self):
