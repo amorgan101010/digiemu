@@ -776,10 +776,8 @@ class Emulator(threading.Thread):
                     dsp.start_thread()
             else:
                 self.audio_live = False
-            # After the DSP's attach_dma: MidiOut chains onto the same SSRT
-            # hooks for eDMA channel 37.
             if self.midi_out is not None:
-                self.midi_out.install(m, ev.get('edma_sw_bank'))
+                self.midi_out.install(m)
             if self.patch_machine:
                 sys.path.insert(0, os.path.join(os.path.dirname(
                     os.path.dirname(os.path.abspath(__file__))), 'tools'))
@@ -998,6 +996,10 @@ class Emulator(threading.Thread):
         # MIDI in rides the same instruction clock, byte by byte on emulated
         # time (MidiIn's docstring), rather than at chunk boundaries.
         self.midi_in.attach(m, pits.sources[0].ips)
+        midi_events = ()
+        if self.midi_out is not None:
+            self.midi_out.attach(m, pits.sources[0].ips)
+            midi_events = (self.midi_out,)
         if self._audio_sources:
             # The SSI clock starts at the timers' own instruction count, so
             # both share one clock from the first step.
@@ -1050,17 +1052,17 @@ class Emulator(threading.Thread):
                     # The SSI's request period is in the same instructions.
                     self._audio_sources[0].ips = n
                 self.midi_in.set_ips(n)
+                if self.midi_out is not None:
+                    self.midi_out.set_ips(n)
                 print('[gui] ips -> %d at %d' % (n, self.stats['instrs']),
                       flush=True)
             pc = self._drain_input(m, profile, pc)
-            if self.midi_out is not None and self.midi_out.deliver(m):
-                pc = m.uc.reg_read(UC_M68K_REG_PC)
             # A chunk of about 5 emulated ms: BUDGET instructions is that at
             # the stock rate, but a fraction of it once audio raises the rate.
             budget = max(BUDGET, pits.sources[0].ips // 200)
             pc, executed, stop = spin(m, pc, budget, pits=pits, fast=self.fast,
                                       async_events=tuple(self._audio_sources)
-                                      + (self.midi_in,))
+                                      + (self.midi_in,) + midi_events)
             if stop != 'limit':
                 self.stats['status'] = 'halted: %s' % stop
                 # Also to stdout: the status label is invisible to anyone
