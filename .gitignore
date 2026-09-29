@@ -44,6 +44,8 @@ snapshots/
 # (docs/refs/*.md) are committed and cite chapter and table numbers.
 docs/refs/*.pdf
 docs/refs/rm.txt
+# Elektron's user manuals, kept at the top level for reference: their copyright.
+/*User*Manual*.pdf
 .coldtrace/
 tools/ghidra/SHARC/data/languages/*.sla
 tools/ghidra/ColdfireEMAC/data/languages/*.sla
