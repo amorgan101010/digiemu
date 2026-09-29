@@ -1125,8 +1125,6 @@ class Emulator(threading.Thread):
                 print('[gui] ips -> %d at %d' % (n, self.stats['instrs']),
                       flush=True)
             pc = self._drain_input(m, profile, pc)
-            if self.midi_out is not None and self.midi_out.deliver(m):
-                pc = m.uc.reg_read(UC_M68K_REG_PC)
             # A chunk of about 5 emulated ms: BUDGET instructions is that at
             # the stock rate, but a fraction of it once audio raises the rate.
             budget = max(BUDGET, pits.sources[0].ips // 200)
