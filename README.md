@@ -61,6 +61,14 @@ time, and a PC with Smart App Control turned on blocks it.
   firewall.
   Master Volume is only in the window. A key held on the page is not shown
   held in the window, and letting go of a key on either side releases it.
+- **Control input:** another program on this computer can turn the
+  encoders, all at once, through a Unix socket at
+  `$XDG_RUNTIME_DIR/elektremu/digitakt.sock` (or `digitone.sock`). Each
+  datagram is one line, `turn <label> <n>`, for example `turn C -3` or
+  `turn LEVEL/DATA 1`. `leds` asks for every key's colour, and the reply goes to
+  the sender's bound address. The EasyControl.9 bridge in
+  `~/Documents/worlde_setup` uses it. Only this user can write to it, and
+  it has no network side.
 - **LOAD SAMPLES** (Digitakt only): see below.
 
 Both windows share one plan: Master Volume and LEVEL/DATA at the top

@@ -77,7 +77,8 @@ import sys
 import time
 import tkinter as tk
 
-from emu import audioout, config, panelkeys, remote, panellayout, panelskin
+from emu import (audioout, config, controlin, panelkeys, remote, panellayout,
+                 panelskin)
 from emu.gui import Emulator, H, W
 
 ON, OFF = bytes.fromhex("e6ed78"), bytes.fromhex("080b04")
@@ -320,6 +321,13 @@ class DigitaktPanel(tk.Tk):
         # On unless switched off: as Gearmulator's MD/MM remote panel is.
         if self._remote_saved().get('enabled', True):
             self.remote_toggle(save=False)
+        self.control = controlin.ControlInput(
+            self.emu, lambda: self.enc_codes, self.PRODUCT,
+            leds=self._key_lights)
+        if not self.control.start():
+            print('[control] no control input: %s' % self.control.error,
+                  flush=True)
+            self.control = None
         self.after(50, self.tick)
 
     def _fit_scrollbars(self, event):
@@ -840,6 +848,15 @@ class DigitaktPanel(tk.Tk):
         self.canvas.itemconfigure(self.remote_text,
                                   text=self.remote.url if on else '')
 
+    def _key_lights(self):
+        """-> key label -> the (r, g, b) its light shows, None when dark:
+        for the control input (emu/controlin.py). Read off the emulator
+        thread's own LED map, so it is current even between repaints."""
+        lit = dict(getattr(self.emu, 'leds', None) or {})
+        led_of = getattr(self, 'led_of', {})
+        return {label: lit.get(led_of[code])
+                for label, code in self.codes.items() if code in led_of}
+
     # ----------------------------------------------------------------- input
     def press(self, code, event=None, latch=None):
         """Hold a key down. A shift-click toggles its latch. `latch` is
@@ -1147,6 +1164,9 @@ class DigitaktPanel(tk.Tk):
         server, self.remote = getattr(self, 'remote', None), None
         if server is not None:
             server.stop()
+        control, self.control = getattr(self, 'control', None), None
+        if control is not None:
+            control.stop()
         emu = getattr(self, 'emu', None)
         self._stop_emulator(
             'saving the session -- this window closes when it is written'
