@@ -13,7 +13,9 @@ ever stored: the folder can move, change drive letter or be unzipped
 somewhere else and still work (snapshots and sidecars hold hashes, not
 paths). APP_ROOT is dirname(sys.executable) when frozen; in development it
 is --home, else $DIGIEMU_HOME, else <repo>/portable, so running from source
-never scatters firmware copies into the working directory.
+never scatters firmware copies into the working directory. The macOS app is
+the exception: nothing may be written inside a signed digiemu.app, so there
+APP_ROOT is ~/Library/Application Support/digiemu (mac_app_home()).
 
 WHY SEPARATE PROCESSES. The launcher never hosts Unicorn. A native crash in
 the patched DLL would otherwise take the window down with it; cancelling
@@ -116,16 +118,17 @@ import time
 import traceback
 
 APP_NAME = 'digiemu'
-APP_VERSION = '0.2.0'
+APP_VERSION = '0.4.0'
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Which devices have a panel in this version, and which module draws it.
 # A device file can exist (Digitakt II, Digitone II) without the first-run
 # recipe or a panel for it: those are named and refused.
-PANELS = {'dt1': 'emu.dtpanel', 'dn1': 'emu.dnpanel'}
+PANELS = {'dt1': 'emu.dtpanel', 'dn1': 'emu.dnpanel', 'mc': 'emu.mdpanel',
+          'ms': 'emu.mdpanel'}
 # How the refusals and the empty list name what this version runs.
-SUPPORTED = 'Digitakt (mk1) and Digitone (mk1)'
+SUPPORTED = 'Digitakt (mk1), Digitone (mk1), Model:Cycles and Model:Samples'
 
 STEPS = ('copy', 'extract', 'card', 'ladder', 'intro', 'settle')
 STEP_TITLES = {
@@ -154,13 +157,18 @@ CHECK_TITLES = {
 }
 CHECK_ROLES = {'baseline': 'Stock', 'build': 'Build', 'compare': ''}
 # Seconds per stage on the reference desktop, for the bar and the estimate.
-# Digitakt measured (2026-09-24); the Digitone's timed run is extrapolated
-# from its untimed one (the cycle clock runs about 64x slower than real time).
+# Digitakt measured (2026-09-24), the Models 2026-10-06; the Digitone's and
+# the Models' timed runs are extrapolated from their untimed ones (the cycle
+# clock runs about 64x slower than real time).
 CHECK_SECONDS = {
     'dt1': {'container': 1, 'prepare': 1, 'bootloader': 9, 'boot': 75,
             'run': 50, 'run-timed': 340, 'compare': 2},
     'dn1': {'container': 1, 'prepare': 1, 'bootloader': 13, 'boot': 150,
             'run': 90, 'run-timed': 540, 'compare': 2},
+    'mc': {'container': 1, 'prepare': 1, 'bootloader': 11, 'boot': 61,
+           'run': 53, 'run-timed': 360, 'compare': 2},
+    'ms': {'container': 1, 'prepare': 1, 'bootloader': 11, 'boot': 32,
+           'run': 51, 'run-timed': 350, 'compare': 2},
 }
 CHECK_REQUEST = 'request.json'
 CHECK_LOG = 'check.log'
@@ -278,11 +286,14 @@ def app_root(home=None):
     """-> APP_ROOT, absolute. An explicit --home always wins.
 
     Frozen, the data sits next to the exe: that is what makes the folder
-    portable, so no environment variable redirects it. In development
-    $DIGIEMU_HOME does, else <repo>/portable."""
+    portable, so no environment variable redirects it. In the macOS app it
+    is mac_app_home(): writing inside the signed bundle would break its
+    signature. In development $DIGIEMU_HOME does, else <repo>/portable."""
     if home:
         return os.path.abspath(home)
     if is_frozen():
+        if sys.platform == 'darwin':
+            return mac_app_home()
         return os.path.dirname(os.path.abspath(sys.executable))
     env = os.environ.get('DIGIEMU_HOME')
     if env:
@@ -333,9 +344,17 @@ def list_firmware_dirs(home=None):
 
 
 def local_app_home():
-    """-> the fallback home for a read-only exe folder: %LOCALAPPDATA%/digiemu."""
+    """-> the fallback home for a read-only exe folder: %LOCALAPPDATA%/digiemu
+    (on macOS, mac_app_home())."""
+    if sys.platform == 'darwin':
+        return mac_app_home()
     base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
     return os.path.join(base, APP_NAME)
+
+
+def mac_app_home():
+    """-> APP_ROOT of the macOS app: ~/Library/Application Support/digiemu."""
+    return os.path.join(os.path.expanduser('~'), 'Library', 'Application Support', APP_NAME)
 
 
 def own_folder(fwdir, home=None):
@@ -373,7 +392,10 @@ def find_folder(name, home=None):
 
 def cli_prefix(home=None):
     """-> how to run this program from a console, for the hints it prints."""
-    if is_frozen():
+    if is_frozen() and sys.platform == 'darwin':
+        # Inside digiemu.app: Terminal needs the whole path to the program.
+        prefix = '"%s"' % os.path.abspath(sys.executable)
+    elif is_frozen():
         exe = os.path.basename(sys.executable)
         # The windowed digiemu.exe prints nowhere a person would see.
         prefix = 'digiemu-console.exe' if exe.lower() == 'digiemu.exe' else exe
@@ -2618,6 +2640,8 @@ def _launcher_log(home):
 def open_in_explorer(path):
     if os.name == 'nt':
         os.startfile(path)
+    elif sys.platform == 'darwin':
+        subprocess.Popen(['open', path])
     else:
         subprocess.Popen(['xdg-open', path])
 
@@ -3618,8 +3642,9 @@ def launcher(home=None):
 
 def _parser():
     ap = argparse.ArgumentParser(
-        prog=APP_NAME, description='Digitakt and Digitone emulator: the '
-                                   'portable app.')
+        prog=APP_NAME, description='Digitakt, Digitone, Model:Cycles and '
+                                   'Model:Samples emulator: the portable '
+                                   'app.')
     ap.add_argument('--home', metavar='DIR',
                     help='data folder (default: next to the exe; from source '
                          '$DIGIEMU_HOME or <repo>/portable)')

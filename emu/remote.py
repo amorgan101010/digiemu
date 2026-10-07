@@ -663,9 +663,9 @@ function build(lay) {
   stage.classList.toggle('digitone', lay.product === 'Digitone');
   keys.clear(); dots.length = 0; ledRgb = [];
   const [bx, by, bw, bh] = lay.bounds;
-  const skin = lay.skin, url = '/skin/' + skin.product + '/';
+  const skin = lay.skin, url = skin ? '/skin/' + skin.product + '/' : '';
   Object.assign(stage.style, {width:bw+'px', height:bh+'px',
-    backgroundImage:'url("'+url+'plate.png")',
+    backgroundImage:skin ? 'url("'+url+'plate.png")' : 'none',
     backgroundSize:lay.canvas[0]+'px '+lay.canvas[1]+'px',
     backgroundPosition:(-bx)+'px '+(-by)+'px'});
   const at = (x, y) => [x - bx, y - by];
@@ -678,17 +678,19 @@ function build(lay) {
   octx = oled.getContext('2d');
   img = octx.createImageData(128, 64);
   // Master Volume is a desktop audio control; only its pointer is displayed here.
-  const [mx,my,mr] = lay.master;
-  const dot = el('dot', mx-bx+Math.sin(Math.PI*5/18)*(mr-9)-2.5,
-                 my-by-Math.cos(Math.PI*5/18)*(mr-9)-2.5, 5, 5);
-  dot.style.background = '#f1f2f3';
+  if (lay.master) {
+    const [mx,my,mr] = lay.master;
+    const dot = el('dot', mx-bx+Math.sin(Math.PI*5/18)*(mr-9)-2.5,
+                   my-by-Math.cos(Math.PI*5/18)*(mr-9)-2.5, 5, 5);
+    dot.style.background = '#f1f2f3';
+  }
   for (const c of lay.controls) {
     if (c.k === 'b') {
       const [x, y] = at(c.x, c.y);
       const k = el('key', x, y, c.w, c.h);
       k.title = c.label + (c.sub ? ' · ' + c.sub : '');
       k.setAttribute('aria-label', k.title);
-      const row = skin.rows[c.label];
+      const row = skin ? skin.rows[c.label] : null;
       let art = null, light = null;
       if (row != null) {
         art = document.createElement('div'); light = document.createElement('div');
@@ -756,7 +758,12 @@ const lit = (i) => { const c = i == null ? null : ledRgb[i]; return c && Math.ma
 
 function paint(code) {
   const k = keys.get(code);
-  if (!k || !k.art) return;
+  if (!k) return;
+  if (!k.art) {
+    const rgb = lit(k.led);
+    k.el.style.background = rgb ? hex(rgb) : '';
+    return;
+  }
   const held = k.el.classList.contains('held');
   const [tw,th] = layout.skin.tile;
   const position = (held ? -tw : 0)+'px '+(-k.row*th)+'px';

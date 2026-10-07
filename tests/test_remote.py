@@ -183,7 +183,7 @@ class Served(unittest.TestCase):
             body += chunk
         s.close()
         self.assertIn(b'200', body.split(b'\r\n', 1)[0])
-        self.assertIn(b'Digitakt remote', body)
+        self.assertIn(b'digiemu remote', body)
 
     def test_state_follows_the_screen_and_leds(self):
         state = self.hello()

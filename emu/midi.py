@@ -16,22 +16,30 @@ notes need the track or auto channel.
 
 MIDI OUT is UART9's transmitter, and the driver (0x40002a3a on Digitone
 1.43) has two ways to use it. A buffer goes into a 4 KB ring and eDMA
-channel 37, started through SSRT, moves it to UART9's data register; its
-completion interrupt, vector 157, sends what was queued meanwhile or marks
-the driver idle. A single byte is written to the data register straight
+channel 37, started by SERQ (the controller's Set Enable Request register:
+UART9's transmit request then drives it), moves it to UART9's data register;
+its completion interrupt, vector 157, sends what was queued meanwhile or
+marks the driver idle. A single byte is written to the data register straight
 away when the transmitter is idle, or else queued, with UART9's own
 interrupt (vector 181) unmasked so that its handler sends the queue one
 byte per interrupt and masks itself again. MidiOut catches the bytes both
-ways, and raises the two interrupts the hardware would. Everything goes out
-at once rather than at 31250 baud.
+ways, and raises the two interrupts the hardware would. A buffer goes out
+at once rather than at 31250 baud; the byte interrupt is level-triggered and
+comes again every 320 us of emulated time (MidiOut is an event source for
+longrun.spin), which matters: the driver hands its queue back to the DMA only
+once the byte queue is empty, so an interrupt offered once a chunk lets clock
+outrun it and keeps every note waiting.
 
 The firmware filters what it sends on MIDI CONFIG settings too (OUTPUT TO,
 CLOCK SEND and so on).
 
-The host side is python-rtmidi, an optional dependency (`uv sync --extra
-midi`): a virtual input port where the platform has them (Linux, macOS), or
-an existing port named by DIGIEMU_MIDI_IN (a substring of its name), and a
-virtual output port of the same name (DIGIEMU_MIDI_OUT likewise).
+The host side is python-rtmidi, an optional dependency from source (`uv sync
+--extra midi`) that the Windows app bundles: a virtual input port where the
+platform has them (Linux, macOS), or an existing port named by
+DIGIEMU_MIDI_IN (a substring of its name), and a virtual output port of the
+same name (DIGIEMU_MIDI_OUT likewise). Windows has no virtual ports (RtMidi's
+WinMM backend cannot make them), so there a DAW connects through a loopback
+port, which is chosen like any other device.
 """
 import collections
 import heapq
@@ -50,11 +58,14 @@ from emu.pit import PENDING_STEP, interrupt_level, render_holds
 TCD36 = 0xFC045000 + 36 * 0x20
 TCD37 = 0xFC045000 + 37 * 0x20
 TCD_SADDR, TCD_ATTR, TCD_SOFF, TCD_NBYTES = 0x00, 0x04, 0x06, 0x08
-TCD_DADDR, TCD_CITER = 0x10, 0x14
+TCD_SLAST, TCD_DADDR, TCD_CITER = 0x0C, 0x10, 0x14
+TCD_BITER, TCD_CSR = 0x1C, 0x1E
+CSR_DONE, CSR_START, CSR_ACTIVE = 0x0080, 0x0001, 0x0040
 UART9 = 0xEC074000
 UTB9 = UART9 + 0x0C             # transmit buffer (write)
 UIMR9 = UART9 + 0x14            # interrupt mask (write); bit 0 TxRDY
 INTC1_SIMR, INTC1_CIMR = 0xFC04C01C, 0xFC04C01D
+EDMA_SERQ = 0xFC044018          # Set Enable Request: a channel number
 TX_SOURCE = 53                  # UART9 on INTC1
 RX_VECTOR = 156
 TX_VECTOR = 181                 # UART9 (INTC1 source 53)
@@ -353,27 +364,33 @@ class MidiOut:
         self.direct = 0             # of which written to UTB9 by the CPU
         self.dma_runs = 0           # channel 37 transfers
         self.raised = {TX_VECTOR: 0, TX_DMA_VECTOR: 0}
+        self.m = None               # set by attach: the event source's machine
+        self.ips = None             # emulated instructions a second
+        self._due = 0               # not before this instruction count
 
-    def install(self, m, bank=None):
-        """Hook UTB9 and, when there is a software eDMA bank, its channel
-        37 starts (chained onto whatever else watches SSRT)."""
+    def install(self, m):
+        """Hook UTB9, the driver's mask writes and SERQ.
+        The driver is busy from the moment it enables channel 37 until the
+        completion interrupt, and a state that was saved, or built, while
+        nothing was listening (this class did not exist for the first boot's
+        snapshot, and one may be saved between a transfer and its interrupt)
+        holds it busy for ever: every later message just queues. So one
+        completion interrupt is owed at the start. The driver's handler takes
+        it whatever the state: it sends what has queued, or clears busy."""
+        self._dma_done = True
         m.uc.hook_add(UC_HOOK_MEM_WRITE, self._on_utb, begin=UTB9, end=UTB9)
         m.uc.hook_add(UC_HOOK_MEM_WRITE, self._on_mask, begin=INTC1_SIMR,
                       end=INTC1_CIMR)
-        if bank is None:
-            return
-        before, after = bank.before_ssrt, bank.after_ssrt
+        m.uc.hook_add(UC_HOOK_MEM_WRITE,
+                      lambda uc, access, address, size, value, data:
+                      self._on_serq(m, size, value),
+                      begin=EDMA_SERQ, end=EDMA_SERQ)
 
-        def chained_before(channel):
-            if before is not None:
-                before(channel)
-            if channel.channel == TX_CHANNEL:
-                self._on_dma(m)
-
-        def chained_after(channel):
-            if after is not None:
-                after(channel)
-        bank.before_ssrt, bank.after_ssrt = chained_before, chained_after
+    def _on_serq(self, m, size, value):
+        # A channel number enables that channel; bit 7 is a no-op and bit 6
+        # means every channel, which the driver never writes.
+        if size == 1 and value & 0xFF == TX_CHANNEL:
+            self._on_dma(m)
 
     def _on_mask(self, uc, access, address, size, value, data):
         if size == 1 and value & 0x7F == TX_SOURCE:
@@ -384,7 +401,7 @@ class MidiOut:
         self._out(bytes([value & 0xFF]))
 
     def _on_dma(self, m):
-        """Channel 37 is about to move its buffer to UTB9: take the bytes
+        """Channel 37 is enabled to move its buffer to UTB9: take the bytes
         from the descriptor as it would read them, and complete it at the
         next boundary."""
         rd = lambda off, n: bytes(m.uc.mem_read(TCD37 + off, n))
@@ -398,6 +415,17 @@ class MidiOut:
         for _ in range(min(citer * nbytes, 0x10000)):
             out += bytes(m.uc.mem_read(saddr, 1))
             saddr = modulo_add(saddr, soff, smod)
+        # The controller's own bookkeeping, which the driver reads back (its
+        # UART interrupt tests DONE): SLAST added to the source, CITER
+        # reloaded from BITER, DONE set.
+        slast = struct.unpack('>i', rd(TCD_SLAST, 4))[0]
+        biter = rd(TCD_BITER, 2)
+        csr = struct.unpack('>H', rd(TCD_CSR, 2))[0]
+        m.uc.mem_write(TCD37 + TCD_SADDR,
+                       struct.pack('>I', (saddr + slast) & 0xFFFFFFFF))
+        m.uc.mem_write(TCD37 + TCD_CITER, biter)
+        m.uc.mem_write(TCD37 + TCD_CSR, struct.pack(
+            '>H', (csr & ~(CSR_START | CSR_ACTIVE)) | CSR_DONE))
         self.dma_runs += 1
         self._dma_done = True
         self._out(bytes(out))
@@ -407,15 +435,49 @@ class MidiOut:
         if data:
             self.sink(data)
 
+    # -- longrun.spin event source ------------------------------------------
+    BYTE_S = 320e-6
+    def attach(self, m, ips):
+        self.m, self.ips = m, ips
+    def set_ips(self, ips):
+        self.ips = ips
+    def _pending_vector(self):
+        """-> the vector the hardware would be raising now, or None."""
+        if self._dma_done:
+            return TX_DMA_VECTOR
+        if self.tx_enabled and self.m.uc.mem_read(UIMR9, 1)[0] & 1:
+            return TX_VECTOR
+        return None
+    def step(self, done, remaining=None):
+        """longrun.spin: instructions until the next interrupt is due, or
+        None when there is none to raise."""
+        if self.m is None:
+            return None
+        vector = self._pending_vector()
+        if vector is None:
+            return None
+        if done < self._due:
+            return self._due - done
+        if render_holds(self.m, done, interrupt_level(self.m, vector)):
+            return remaining
+        return PENDING_STEP
+    def service(self, done):
+        """longrun.spin: raise what is due. -> True if the PC changed."""
+        if self.m is None or done < self._due:
+            return False
+        bytes_before = self.raised[TX_VECTOR]
+        if not self.deliver(self.m):
+            return False
+        if self.raised[TX_VECTOR] != bytes_before:
+            self._due = done + int((self.ips or 0) * self.BYTE_S)
+        return True
     def deliver(self, m):
         """Worker thread, between chunks: the transmit interrupts. -> True
         if one was raised (the PC changed)."""
-        if self._dma_done:
-            if _take(m, TX_DMA_VECTOR):
-                self._dma_done = False
-                self.raised[TX_DMA_VECTOR] += 1
-                return True
-            return False
+        if self._dma_done and _take(m, TX_DMA_VECTOR):
+            self._dma_done = False
+            self.raised[TX_DMA_VECTOR] += 1
+            return True
         # UART9's TxRDY is always set here (nothing takes time to send), so
         # its interrupt is pending whenever the driver enables it: the
         # driver masks source 53 once its queue is empty.
@@ -484,9 +546,15 @@ def _rtmidi():
     return rtmidi
 
 
-def port_name(full):
-    """A port's name without ALSA's trailing client:port numbers, which
-    change when a device is plugged in again: what a saved choice keeps."""
+def port_name(full, winmm=False):
+    """A port's name without the numbers the host's MIDI API adds to it,
+    which change when a device is plugged in again: what a saved choice
+    keeps. ALSA appends the client:port pair ('Synth 20:0'). Windows' WinMM,
+    as RtMidi lists it, appends the port's index ('Elektron Digitakt 2' as
+    an input and 'Elektron Digitakt 3' as an output on one PC), which moves
+    whenever a device comes or goes; `winmm` drops that instead."""
+    if winmm:
+        return re.sub(r' \d+$', '', full)
     return re.sub(r'\s+\d+:\d+$', '', full)
 
 
@@ -546,13 +614,26 @@ class HostMidi:
         port.set_callback(lambda event, _data: self._sink(bytes(event[0])))
         return port
 
+    @property
+    def virtual(self):
+        """True if the virtual ports opened. Windows has none: a DAW needs a
+        loopback port there."""
+        return self._vin is not None or self._vout is not None
+
+    def _names(self, port):
+        """-> the names of the ports `port` lists, as a saved choice keeps
+        them (port_name). Two devices with one name share it on WinMM; the
+        first of them is the one opened."""
+        winmm = port.get_current_api() == self._rt.API_WINDOWS_MM
+        return [port_name(p, winmm) for p in port.get_ports()]
+
     def _list(self, cls):
         probe = cls(name=self.name + ' (list)')
         try:
-            names = [port_name(p) for p in probe.get_ports()]
+            names = self._names(probe)
         finally:
             probe.delete()
-        return [n for n in names if not n.startswith(self.name)]
+        return [n for n in dict.fromkeys(names) if not n.startswith(self.name)]
 
     def inputs(self):
         """Device inputs that can be chosen, by name, not ours."""
@@ -561,10 +642,9 @@ class HostMidi:
     def outputs(self):
         return self._list(self._rt.MidiOut)
 
-    @staticmethod
-    def _index(port, name):
-        for i, full in enumerate(port.get_ports()):
-            if port_name(full) == name:
+    def _index(self, port, name):
+        for i, listed in enumerate(self._names(port)):
+            if listed == name:
                 return i
         raise OSError('MIDI port %r is not there' % name)
 
