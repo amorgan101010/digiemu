@@ -145,6 +145,11 @@ impl Bench {
         Ok(())
     }
 
+    /// The panel's scan frames so far, and the emulated time in seconds.
+    pub fn frames(&self) -> (i64, f64) {
+        (self.k.dev.borrow().panel.frames, self.k.now as f64 / self.k.ips as f64)
+    }
+
     /// Guest memory, zero where there is none.
     pub fn peek(&self, addr: u32, out: &mut [u8]) {
         self.k.m.read_bytes(addr, out);

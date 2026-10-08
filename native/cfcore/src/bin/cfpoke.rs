@@ -14,6 +14,7 @@
 //!     watch S        run S seconds, printing each LED that changes
 //!     screen AT      print the screen the pointer at hex AT names
 //!     peek AT N      print N bytes of guest memory at hex AT
+//!     frames         print the panel's scan frames so far and the time
 use cfcore::ffi::{Bench, SCREEN_BYTES};
 
 fn lit(mask: u64) -> String {
@@ -74,6 +75,10 @@ fn main() {
                     last = now;
                 }
                 println!("changed: {} | lit at the end: {}", lit(seen), lit(last));
+            }
+            "frames" => {
+                let (frames, at) = b.frames();
+                println!("{frames} scan frames at {at:.4} s");
             }
             "peek" => {
                 let at = u32::from_str_radix(it.next().expect("AT"), 16).expect("hex AT");

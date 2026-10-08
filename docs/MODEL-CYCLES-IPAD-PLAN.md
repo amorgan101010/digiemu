@@ -712,12 +712,18 @@ were made and run here; the Swift is **written and not built**.
   stepping through the pages. Both are in `devices/model-cycles.toml`
   (`page_leds`, `[panel.knob_leds]`), drawn dark on the plate, and lit by
   the desktop window and the app.
-- [O] The lock does not always take here. Holding step 3 for 0.3, 0.8 or
-  1.5 s and turning PITCH 1, 5 or 12 steps, playing and stopped, PITCH's
-  LED lit in 6 of 18 tries, with no pattern in which. When it does not, the
-  screen shows the new value plain and not inverted: the turn went to the
-  track, as if no step were held. Whether the device does the same, or the
-  panel model's held key or its turns are at fault, is not known.
+- [C] An earlier note here said the lock did not always take (6 of 18
+  tries). That was the test: it sent five detents in one instant, which no
+  finger does. With the turn paced as a drag is (15 single steps, 16 or
+  50 ms apart), holding step 3 for 0.15 to 2.5 s, playing and stopped, the
+  lock took in 20 of 20.
+- What the test did show about turns, unheld, on DECAY from 56: ten single
+  steps 30 to 100 ms apart give +7, 300 ms apart +5, three steps 100 ms
+  apart give 0, and a first burst of five gives 0 (the value is shown and
+  not changed) where a second gives +6. So the first few steps after a
+  pause only show the value, and a slow turn counts about half its steps.
+  Aileen takes this to be how the device's knobs respond, and will play
+  it more before any change to how a drag counts.
 - The Model:Samples' device file has the same ids, **not checked**: its
   table was not read.
 - **Icons.** MACHINE, PUNCH and GATE are drawn after the pictograms on the
