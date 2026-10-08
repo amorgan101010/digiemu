@@ -1518,12 +1518,32 @@ class ModelPanelLayoutTest(unittest.TestCase):
         cls = self.md.ModelPanel
         self.assertTrue(issubclass(cls, self.dt.DigitaktPanel))
         _b, encoders = self.md.layout('Model:Cycles')
-        self.assertEqual(encoders['VOLUME'], self.dt.MASTER_VOLUME)
+        self.assertGreater(encoders['VOLUME'][0], encoders['SHAPE'][0])
+        self.assertEqual(encoders['VOLUME'][1], encoders['PITCH'][1])
 
 
 class ModelInputTest(Quiet):
     """On a Model, _drain_input hands keys, pads and encoders to the board's
     panel (emu/modelboard.py) at once, by the device file's positions."""
+
+    def test_model_drag_sends_one_turn_at_release_after_rapid_motion(self):
+        from emu.dtpanel import DigitaktPanel
+        sent, scheduled, cancelled = [], [], []
+        win = types.SimpleNamespace(
+            DRAG_FLUSH_MS=16,
+            turn=lambda code, steps: sent.append((code, steps)),
+            after=lambda ms, fn: scheduled.append((ms, fn)) or len(scheduled),
+            after_cancel=lambda timer: cancelled.append(timer))
+        win._flush_drag = lambda: DigitaktPanel._flush_drag(win)
+        event = lambda y: types.SimpleNamespace(x=92, y=y)
+        DigitaktPanel._drag_start(win, 4, event(158))
+        DigitaktPanel._drag(win, 4, event(170))
+        DigitaktPanel._drag(win, 4, event(182))
+        self.assertEqual(sent, [])
+        self.assertEqual(len(scheduled), 1)
+        DigitaktPanel._drag_end(win, 4, 'LEVEL/DATA', event(182))
+        self.assertEqual(sent, [(4, -4)])
+        self.assertEqual(cancelled, [1])
 
     def test_keys_pads_and_encoders_reach_the_panel(self):
         from emu import gui

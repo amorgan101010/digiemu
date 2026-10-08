@@ -1372,6 +1372,10 @@ class Emulator(threading.Thread):
             return
         n = len(raw) // 8 * 8
         if n:
+            if self._board is not None:
+                gain = self._board.output_gain()
+                if gain != self._volume:
+                    self.set_volume(gain)
             pcm = audioout.frames_from_ssi(bytes(raw[:n]), 32,
                                            self.audio_cfg['sample_bits'])
             del raw[:n]

@@ -88,6 +88,10 @@ def page_lights(spec, count=4):
 
 
 def face(product, label):
+    if product.startswith('Model:'):
+        if product == 'Model:Samples' and (label.isdigit() or label in ('RECORD', 'PLAY', 'STOP', 'LOOP', 'FLIP')):
+            return '#cb4d51'
+        return '#596368'
     if label == 'FUNC':
         return '#1ba3af' if product == 'Digitone' else '#d68d49'
     if product == 'Digitone':

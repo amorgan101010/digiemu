@@ -16,8 +16,8 @@ ROOT = Path(__file__).with_name('assets') / 'panels'
 
 
 def asset(product, filename):
-    product = product.lower()
-    if product not in ('digitakt', 'digitone'):
+    product = product.lower().replace(':', '-')
+    if product not in ('digitakt', 'digitone', 'model-samples', 'model-cycles'):
         raise ValueError('unknown panel skin')
     if filename not in ('plate.png', 'keys.png', 'masks.png', 'skin.json'):
         raise ValueError('unknown panel asset')
@@ -39,7 +39,7 @@ def rgba_png(width, height, pixels):
 class Skin:
     def __init__(self, master, product):
         self.master = master
-        self.product = product.lower()
+        self.product = product.lower().replace(':', '-')
         self.meta = json.loads(asset(product, 'skin.json').read_text())
         self.plate = tk.PhotoImage(master=master, file=asset(product, 'plate.png'))
         self.atlas = tk.PhotoImage(master=master, file=asset(product, 'keys.png'))

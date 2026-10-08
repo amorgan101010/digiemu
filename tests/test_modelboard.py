@@ -116,6 +116,13 @@ class KeyTest(unittest.TestCase):
 
 
 class EncoderTest(unittest.TestCase):
+    def test_a_rapid_drag_does_not_leave_a_long_queue_or_delay_reversal(self):
+        panel = ModelPanel()
+        panel.turn(3, 1000)
+        self.assertEqual(panel._turns[3], 2 * modelboard.MAX_PENDING_TURNS)
+        panel.turn(3, -2)
+        self.assertEqual(panel._turns[3], -4)
+
     def test_each_step_is_one_firmware_step_either_way(self):
         p = ModelPanel()
         fw = FirmwareView(p)
@@ -224,6 +231,18 @@ from unicorn import UC_HOOK_MEM_READ as READ, UC_HOOK_MEM_WRITE as WRITE  # noqa
 
 
 class InstallTest(unittest.TestCase):
+    def test_firmware_codec_volume_controls_host_gain(self):
+        codec = i2c.RegisterFile()
+        board = modelboard.Board(None, i2c.I2cBus(devices={
+            modelboard.CODEC_ADDRESS: codec}), None, None)
+        self.assertEqual(board.output_gain(), 1.0)  # before codec setup
+        codec.regs[0x1E] = codec.regs[0x1F] = 0xA6  # boot level
+        self.assertEqual(board.output_gain(), 1.0)
+        codec.regs[0x1E] = codec.regs[0x1F] = 0x92  # 20 turns down
+        self.assertAlmostEqual(board.output_gain(), 2 / 22)
+        codec.regs[0x1E] = codec.regs[0x1F] = 0x90  # LCD minimum
+        self.assertEqual(board.output_gain(), 0.0)
+
     def test_nothing_is_installed_without_the_models_scan_handler(self):
         m = FakeMachine()
         prof = type('P', (), {'model_scan_start': None})()

@@ -386,9 +386,9 @@ class DigitaktPanel(tk.Tk):
             sx + 14, sy + 14, text='', fill=ERR,
             font=('Helvetica', -12), anchor='nw',
             width=W * SCALE - 28, state='hidden')
-        self.status = c.create_text(24, 868, text='Starting…', fill=DIM,
+        self.status = c.create_text(24, self.PANEL_H - 16, text='Starting…', fill=DIM,
                                      font=('Helvetica', -11), anchor='w', width=790)
-        clear = c.create_text(976, 868, text='clear latched', fill=DIM,
+        clear = c.create_text(self.PANEL_W - 24, self.PANEL_H - 16, text='clear latched', fill=DIM,
                                font=('Helvetica', -11), anchor='e')
         c.tag_bind(clear, '<Button-1>', lambda _e: self.clear_latched())
         c.bind('<ButtonRelease-1>', self._release_pointer)
@@ -579,7 +579,8 @@ class DigitaktPanel(tk.Tk):
         rate = emu.audio_cfg['rate']
         if self.player.rate != rate:
             self.player = audioout.Player(rate=rate)
-        self.player.gain = getattr(self, '_mv_value', 1.0)
+        self.player.gain = getattr(self, '_mv_value',
+                                   getattr(emu, '_volume', 1.0))
         self.player.play(pcm)
         self._note('playing %.2f s' % (len(pcm) / 4 / rate), 1.0)
 
@@ -937,6 +938,14 @@ class DigitaktPanel(tk.Tk):
         self._drag_code = code
         self._drag_origin = (event.x, event.y)
         self._drag_moved = False
+        self._drag_pending = 0
+        self._drag_after = None
+
+    def _flush_drag(self):
+        self._drag_after = None
+        steps, self._drag_pending = self._drag_pending, 0
+        if steps:
+            self.turn(self._drag_code, steps)
 
     def _drag(self, code, event):
         """Vertical drag turns an encoder: up is clockwise, 6px per detent."""
@@ -951,13 +960,22 @@ class DigitaktPanel(tk.Tk):
         step = int(self._drag_acc)
         if step:
             self._drag_acc -= step
-            self.turn(code, step)
+            if getattr(self, 'DRAG_FLUSH_MS', 0):
+                self._drag_pending += step
+                if self._drag_after is None:
+                    self._drag_after = self.after(self.DRAG_FLUSH_MS,
+                                                  self._flush_drag)
+            else:
+                self.turn(code, step)
 
     def _drag_end(self, code, label, event):
         """A click pushes an encoder; a drag turns it."""
         if code != getattr(self, '_drag_code', None):
             return
         moved = self._drag_moved
+        if self._drag_after is not None:
+            self.after_cancel(self._drag_after)
+            self._flush_drag()
         self._drag_code = None
         if not moved:
             push = self.codes.get(label)
