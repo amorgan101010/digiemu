@@ -135,6 +135,14 @@ def build(product):
     d.text((sx+20,sy+130),'PANEL PREVIEW',fill='#334577',font=art.font(6))
     out=art.ROOT/'out/ui';out.mkdir(parents=True,exist_ok=True)
     preview.save(out/(product.lower().replace(':','-')+'.png'))
+    # The app's panel: the same, with its PUSH key and the legend the app
+    # draws under it.
+    app=preview.copy()
+    sprite,_=art.key_sprite(product,'PUSH',PUSH,False)
+    app.alpha_composite(sprite,(PUSH[0]-art.PAD,PUSH[1]-art.PAD))
+    ImageDraw.Draw(app).text((PUSH[0]+PUSH[2]/2,PUSH[1]+PUSH[3]+14),'HOLD + KNOB TO PRESS',
+                             fill='#50584f',font=art.font(3),anchor='mm')
+    app.save(out/(product.lower().replace(':','-')+'-app.png'))
     print(product, 'artwork and preview written')
 
 
