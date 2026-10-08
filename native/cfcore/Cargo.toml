@@ -1,0 +1,16 @@
+[package]
+name = "cfcore"
+version = "0.0.1"
+edition = "2021"
+license = "GPL-2.0-or-later"
+description = "ColdFire V4e/EMAC core for digiemu: interpreter and ahead-of-time translated blocks, no JIT"
+
+[lib]
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = false

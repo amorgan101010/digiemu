@@ -1,0 +1,13 @@
+--- a/qemu/target/m68k/unicorn.c
++++ b/qemu/target/m68k/unicorn.c
+@@ -262,3 +266,10 @@ void uc_init(struct uc_struct *uc)
+     uc->cpu_context_size = offsetof(CPUM68KState, end_reset_fields);
+     uc_common_init(uc);
+ }
++
++__attribute__((visibility("default")))
++void *uc_scratch_m68k_mac_ptr(struct uc_struct *uc)
++{
++    CPUM68KState *env = uc->cpu->env_ptr;
++    return env->macc;
++}
