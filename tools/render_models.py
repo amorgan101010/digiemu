@@ -13,7 +13,7 @@ _original_icon = art.icon
 
 
 def model_icon(mask, label, x, y, w, h, ink=255):
-    aliases = {'SETTINGS': 'GLOBAL', 'WAVE': 'SAMPLE', 'MACHINE': 'VOICE',
+    aliases = {'SETTINGS': 'GLOBAL',
                'FUNCTION': 'FUNC'}
     cx, cy = x + w / 2, y + h / 2 - 2
     if label in mdpanel.PADS:
@@ -41,13 +41,15 @@ def model_icon(mask, label, x, y, w, h, ink=255):
         # An envelope: up fast, down to a level, held, then let go.
         art.line(mask, [(cx-13,cy+9), (cx-7,cy-10), (cx-1,cy), (cx+7,cy), (cx+13,cy+9)], ink, 2.5)
     elif label == 'LOOP':
-        # Once round and back to the start.
-        art.line(mask, [(cx+10*math.cos(a*math.pi/180), cy+10*math.sin(a*math.pi/180)) for a in range(-50, 251, 10)], ink, 2.5)
-        end = 250*math.pi/180
-        hx, hy = cx+10*math.cos(end), cy+10*math.sin(end)
-        back = end - math.pi/2          # against the way the arc runs
-        art.line(mask, [(hx+8*math.cos(back-.6), hy+8*math.sin(back-.6)), (hx, hy),
-                        (hx+8*math.cos(back+.6), hy+8*math.sin(back+.6))], ink, 2.5)
+        # Round a square and back: out along the top, home along the bottom.
+        art.line(mask, [(cx-10,cy+2), (cx-10,cy-7), (cx+9,cy-7)], ink, 2.6)
+        art.line(mask, [(cx+4,cy-12), (cx+10,cy-7), (cx+4,cy-2)], ink, 2.6)
+        art.line(mask, [(cx+10,cy-2), (cx+10,cy+7), (cx-9,cy+7)], ink, 2.6)
+        art.line(mask, [(cx-4,cy+2), (cx-10,cy+7), (cx-4,cy+12)], ink, 2.6)
+    elif label == 'WAVE':
+        # A burst of sound: bars rising to the middle, a dot at each end.
+        for dx, length in ((-10, 3), (-5, 12), (0, 22), (5, 12), (10, 3)):
+            art.line(mask, [(cx+dx, cy-length/2), (cx+dx, cy+length/2)], ink, 2.8)
     elif label == 'PUSH':
         # A knob from the side, and the arrow that presses it.
         art.line(mask, [(cx,cy-13), (cx,cy-3)], ink, 2.5)
@@ -57,8 +59,11 @@ def model_icon(mask, label, x, y, w, h, ink=255):
         art.line(mask, [(cx-10,cy-3), (cx+9,cy-3), (cx+9,cy+9), (cx-5,cy+9)], ink, 2.5)
         art.line(mask, [(cx-4,cy-9), (cx-11,cy-3), (cx-4,cy+3)], ink, 2.5)
     elif label == 'FLIP':
-        art.line(mask, [(cx-12,cy-6), (cx+10,cy-6), (cx+4,cy-12)], ink, 2.5)
-        art.line(mask, [(cx+12,cy+6), (cx-10,cy+6), (cx-4,cy+12)], ink, 2.5)
+        # There and back: one arrow each way.
+        art.line(mask, [(cx-11,cy-6), (cx+10,cy-6)], ink, 3)
+        art.line(mask, [(cx+4,cy-11), (cx+10,cy-6), (cx+4,cy-1)], ink, 3)
+        art.line(mask, [(cx+11,cy+6), (cx-10,cy+6)], ink, 3)
+        art.line(mask, [(cx-4,cy+1), (cx-10,cy+6), (cx-4,cy+11)], ink, 3)
     else:
         _original_icon(mask, aliases.get(label,label), x,y,w,h,ink)
 
