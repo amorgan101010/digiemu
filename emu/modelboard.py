@@ -77,6 +77,7 @@ LEDS = LED_ROWS * 8
 KEY_FRAMES = 4
 PAD_FRAMES = 40
 ENCODER_FRAMES = 1              # per Gray-code transition
+MAX_PENDING_TURNS = 128          # keep rapid drags responsive to a reversal
 
 # Pad pressure, as the 16-bit ADC sample: above PAD_ARM arms a pad, and the
 # firmware's velocity is (sample - PAD_ARM) * 1.694 / 256, so a velocity v
@@ -137,7 +138,12 @@ class ModelPanel:
         counter-clockwise."""
         if not 0 <= encoder < ENCODERS:
             raise ValueError('no encoder %r' % (encoder,))
-        self._turns[encoder] += 2 * int(steps)
+        delta = 2 * int(steps)
+        pending = self._turns[encoder]
+        if pending * delta < 0:
+            pending = 0          # discard unsent phases from the old drag
+        limit = 2 * MAX_PENDING_TURNS
+        self._turns[encoder] = max(-limit, min(limit, pending + delta))
 
     def release_all(self):
         for column in range(KEY_COLUMNS):
@@ -268,6 +274,26 @@ class Board:
         self.bus = bus
         self.forced = forced
         self.codec_sem = codec_sem
+
+    def output_gain(self):
+        """Host gain for the codec output level set by the firmware's VOLUME.
+
+        The firmware writes the same seven-bit level to codec registers 0x1E
+        and 0x1F. Their reset value is zero until codec setup has run; the
+        normal boot level is 0x26. The firmware stops at 0x10 when its LCD
+        volume reaches zero. Scale that range to silence and keep the host
+        output within the Digitakt panel's 1.5x ceiling.
+        """
+        regs = self.bus.devices[CODEC_ADDRESS].regs
+        left, right = regs[0x1E], regs[0x1F]
+        if left == right == 0:
+            return 1.0
+
+        def channel(value):
+            level = value & 0x7F
+            return min(1.5, max(0.0, (level - 0x10) / (0x26 - 0x10)))
+
+        return (channel(left) + channel(right)) / 2
 
     def checkpoint_state(self):
         return {'type': 'ModelBoard', 'version': 1,

@@ -18,6 +18,7 @@ audible as a gap rather than a stall.
 from __future__ import annotations
 
 import array
+import audioop
 import ctypes
 import ctypes.util
 import os
@@ -642,6 +643,12 @@ def apply_gain(pcm, gain):
     """
     if gain == 1.0 or not pcm:
         return pcm
+    if gain == 0.0:
+        return bytes(len(pcm))
+    if sys.byteorder == 'little':
+        # Live Model audio uses gain on every block. The Python sample loop
+        # costs enough CPU to starve an engine already running at real time.
+        return audioop.mul(pcm, 2, gain)
     samples = array.array('h')
     samples.frombytes(pcm)
     if sys.byteorder == 'big':
