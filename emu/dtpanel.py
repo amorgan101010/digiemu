@@ -367,6 +367,8 @@ class DigitaktPanel(tk.Tk):
         self.extra_items = {}
         pad = self.skin.meta['pad']
         for label in self.skin.meta['keys']:
+            if label not in self.BUTTONS:
+                continue                 # a key only the app's panel has (PUSH)
             x, y = self.BUTTONS[label][:2]
             cap = c.create_image(x - pad, y - pad,
                                  image=self.skin.cap(label), anchor='nw')
