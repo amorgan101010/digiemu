@@ -422,6 +422,64 @@ What this does not cover:
 - The 4.2x is the emulation alone. On a device the touch panel and the
   audio output add to it.
 
+## The native machine on arm64 (2026-10-07, M1 MacBook Air)
+
+[C] The sections above say nothing has run on arm64. `cfrun` now has, on
+the build Mac: an M1 MacBook Air (8 GB, macOS 27.0, rustc 1.99.0,
+`aarch64-apple-darwin`), on AC power. Not on an iPhone or iPad: this is the
+first arm64 figure, not the plan's gate.
+
+The inputs were copied from the desktop's `out/cfcore/`:
+`cycles-play.trace` and `aot_gen.rs` (4,072 blocks). The build with the
+blocks took 6 min 12 s.
+
+- **The same run as on x86-64.** Over the recording's 3.04 s: 145,696
+  frames, the first 32,577 bit-identical to Python's, then correlation
+  0.9923 at a lag of 2 samples, level 9,118 against 9,099, 31,158
+  interrupts from the models, 0.06% of instructions interpreted. Every one
+  of those figures equals the Ryzen's.
+- **Speed.** 120 emulated seconds, two runs: 0.1825 and 0.1812 s per
+  emulated second, 5.5x real time (the Ryzen: 0.23 s, 4.2x). 13,133M
+  instructions in 21.8 s is about 600 MIPS on the whole mix. A third run
+  under the sampler took 0.1875 s.
+- **`cfrun`'s "s of CPU" is wall time** (`Instant`). On an idle machine the
+  two agree (22.7 s user for 21.8 s wall); they do not when the process is
+  descheduled.
+- **Efficiency cores, as a floor only.** Under `taskpolicy -b` (background
+  priority, which also clamps the efficiency cores' clock), 60 emulated
+  seconds took 58 s of user CPU, 62 and 89 s of wall: about 1.0x. This is
+  not an A10 estimate. It shows there is no margin on a core that slow.
+- **Memory.** Peak footprint 1.0-1.1 GB, nearly all of it the 430 MB trace
+  being read and parsed; 196 MB while running. A device benchmark must not
+  load this trace on the 2 GB iPad: it needs a small starting-state file.
+
+Where the time goes, from `sample cfrun 12 1` during the 120 s run (9,015
+samples, by top of stack):
+
+| Share | Where |
+| --- | --- |
+| 84% | `aot::run`: the translated blocks, their handlers inlined |
+| 9% | eDMA copies: `Bank::transfer` 4.9%, `Mem::write_bytes` 2.9%, `Bank::mapped` 1.1% |
+| 3% | the allocator (`malloc`, `realloc`, `free`) |
+| 1% | `main` (the step loop, inlined) and `DevBus::access` |
+| 0.7% | `Interp::step` |
+
+- The devices are not the cost any more: everything outside translated
+  code is about 16%.
+- Two cheap things in that 16%: `edma.rs` and `ssi.rs` allocate a buffer
+  for each transfer (`span`'s `vec!` and the one in the TCD copy in
+  `edma.rs`, `captured` in `ssi.rs`), and the copies go through
+  `write_bytes` a range at a time. Reused buffers and a direct copy could
+  take back most of the 12%. Not done.
+- [O] Which blocks or handlers dominate inside `aot::run` on arm64. The
+  sampler sees one function. A build with debug info would map samples to
+  guest addresses.
+
+For the device runs: the library type-checks for `aarch64-apple-ios`
+(`cargo check --lib --target aarch64-apple-ios`), but this Mac has only the
+Command Line Tools, so there is no iOS SDK to link against. Full Xcode is
+needed, and the disk had 14 GB free.
+
 ## What the Python side did per second (the scope that was ported)
 
 Counted before the port, for the playing Cycles, per emulated second at
@@ -451,8 +509,9 @@ eDMA request paths, the MOVEC patches, and the fault hook. Native in the
 Unicorn library already, so not in the counts: the block budget, the
 software eDMA transfers, FF1 and `rte`.
 
-Next: build it for arm64 and time it on the phone and the iPad, which is
-the plan's gate; then what a session needs beyond playing (the display out,
+Next: time it on the phone and the iPad, which is the plan's gate (it is
+built and timed for arm64 on the Mac, above; the devices need Xcode and a
+small starting-state file); then what a session needs beyond playing (the display out,
 saving, the +Drive, starting without a Python-made state).
 
 ## What can be reused
