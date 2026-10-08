@@ -102,9 +102,9 @@ The Model:Cycles and Model:Samples share a window: VOLUME and LEVEL/DATA at
 the top left, fourteen knobs right of the screen, a row of keys, the
 transport, six pads and sixteen trig keys. VOLUME is the firmware's own
 knob, so there is no software Master Volume. **A pad's velocity is where you
-click it**: the top edge is the hardest hit. The key under PITCH is its push
-switch, which on the Model:Samples opens a folder or picks a sample in the
-sample browser (WAVE).
+click it**: the top edge is the hardest hit. LEVEL/DATA is the one knob with a push
+switch: click it, which on the Model:Samples opens a folder or picks a sample
+in the sample browser (WAVE).
 
 ### Loading samples
 

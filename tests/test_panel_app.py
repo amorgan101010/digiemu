@@ -1494,8 +1494,9 @@ class ModelPanelLayoutTest(unittest.TestCase):
     def test_every_control_has_a_place(self):
         for dev in self.devs:
             buttons, encoders = self.md.layout(dev.name)
-            self.assertEqual(set(dev.labels.values()) - set(buttons), set(),
-                             dev.name)
+            # LEVEL/DATA's push switch is the knob itself, clicked.
+            self.assertEqual(set(dev.labels.values()) - set(buttons),
+                             {'LEVEL/DATA'}, dev.name)
             self.assertEqual(set(encoders), set(dev.encoder_labels.values()),
                              dev.name)
 

@@ -14,8 +14,12 @@ Model:Cycles' MACHINE, PUNCH and GATE keys are the Model:Samples' WAVE, LOOP
 and FLIP, and five of their knobs differ.
 
 A pad's velocity is where it is clicked: the top edge is 127, the bottom 30.
-PITCH pushes: its switch is the key under the knob (on the Model:Samples it
+LEVEL/DATA is the one knob that pushes: click it (on the Model:Samples it
 opens a folder or picks a sample in the sample browser).
+
+The computer keyboard plays the panel as it does the Digitakt's, on the
+Models' own layout (emu/panelkeys.py MODEL): the parameter knobs on Q-R, A-F
+and Z-V, the pads on B to /, Ctrl for FUNCTION, Enter to push LEVEL/DATA.
 
 VOLUME is an encoder the firmware reads, not the Digitakt's analog pot.
 Turning it sets the firmware's codec output level, which the host audio
@@ -30,7 +34,7 @@ sample put in /incoming is in the sample browser after the rebuild.
 """
 import sys
 
-from emu import config, dtpanel
+from emu import config, dtpanel, panelkeys
 from emu import device as devices
 from emu.dtpanel import DigitaktPanel
 
@@ -93,9 +97,13 @@ def layout(name):
         del buttons[label]
     if name == 'Model:Cycles':
         buttons['MACHINE'] = (*buttons['MACHINE'][:4], 'PRESET MENU', None)
-    x, y, r = encoders['PITCH']
-    buttons['PITCH'] = (x - 28, y + r + 12, 56, 18, None, None)
     return buttons, encoders
+
+
+def keys(name):
+    """-> (computer key -> key or pad label, computer key -> knob label)."""
+    name = name if name in KNOBS else 'Model:Samples'
+    return panelkeys.MODEL_KEYS[name], panelkeys.model_knobs(KNOBS[name])
 
 
 def _product(syx):
@@ -115,6 +123,8 @@ class ModelPanel(DigitaktPanel):
                 'Elektron')
     BUTTONS = BUTTONS
     ENCODERS = {}
+    KEYS = panelkeys.MODEL_SAMPLES
+    FUNC_KEY = panelkeys.MODEL_FUNC
     SAMPLES = False
     PANEL_W, PANEL_H = PANEL_W, PANEL_H
     SCREEN_LEGEND = 'Model'
@@ -131,6 +141,7 @@ class ModelPanel(DigitaktPanel):
                              'Elektron' % name)
             self.SAMPLES = getattr(dev, 'short', None) == 'ms'
         self.BUTTONS, self.ENCODERS = layout(name)
+        self.KEYS, self.KNOB_KEYS = keys(name)
         super().__init__(snapshot, syx=syx, **kw)
 
     def _draw_master_volume(self):
@@ -143,11 +154,12 @@ class ModelPanel(DigitaktPanel):
                       bounds=list(BODY))
         return result
 
-    def press(self, code, event=None):
-        """A pad press carries its velocity: where on the pad it was."""
+    def press(self, code, event=None, latch=None):
+        """A pad press carries its velocity: where on the pad it was. One
+        from the keyboard has no place, and plays at the default."""
         dev = getattr(self.emu, 'device', None)
         if event is None or code not in getattr(dev, 'pads', {}):
-            return super().press(code, event)
+            return super().press(code, event, latch)
         y = self.canvas.canvasy(event.y)
         frac = min(1.0, max(0.0, (y - PAD_Y) / float(PAD_H)))
         velocity = int(round(127 - frac * 97))

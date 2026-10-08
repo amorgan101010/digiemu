@@ -208,6 +208,8 @@ class DigitaktPanel(tk.Tk):
     SCREEN_X, SCREEN_Y = SCREEN_X, SCREEN_Y
     SAMPLES = True                       # the LOAD SAMPLES button
     KEYS = panelkeys.DIGITAKT            # computer key -> panel label
+    KNOB_KEYS = panelkeys.KNOBS          # computer key -> encoder label
+    FUNC_KEY = 'FUNC'                    # the label of the key Ctrl holds
     REMOTE_PORT = 8794                   # REMOTE's first port (emu/remote.py)
     LEGEND = AMBER
     SCREEN_LEGEND = '8 Voice Digital Drum Computer & Sampler'
@@ -263,7 +265,8 @@ class DigitaktPanel(tk.Tk):
         self.draw_screen(bytearray(W * H))
 
         self.bind('<Escape>', lambda _e: self.clear_latched())
-        self.keyboard = panelkeys.Keyboard(self, self.KEYS)
+        self.keyboard = panelkeys.Keyboard(self, self.KEYS, self.KNOB_KEYS,
+                                           self.FUNC_KEY)
         self.bind('<KeyPress>', lambda e: self._key(e, True))
         self.bind('<KeyRelease>', lambda e: self._key(e, False))
         self.bind('<FocusOut>',

@@ -69,7 +69,7 @@ vector 208 at each other (addresses on Model:Cycles 1.13):
   `(row bits << 8) | row << 5` to 0x8C000002, active low.
 
 Columns 0 to 3 are 32 keys, a set bit pressed: the 16 trigs, 15 function
-keys and PITCH's push switch. Columns 4 to 7 are 16 encoders, two bits each
+keys and LEVEL/DATA's push switch. Columns 4 to 7 are 16 encoders, two bits each
 (encoder *e* is bits 2(*e* mod 4) and 2(*e* mod 4) + 1 of column 4 + *e*/4);
 the firmware decodes them in quadrature, one step per two Gray-code
 transitions. Pad *n* is ADC channel 6 − *n*: it arms above about 0x2148 in
@@ -90,8 +90,11 @@ identical), and every encoder turned and named by the parameter it showed.
 The Cycles' MACHINE, PUNCH and GATE are the Samples' WAVE, LOOP and FLIP,
 and five knobs differ (COLOR, SHAPE, SWEEP and CONTOUR against SMPL START,
 SMPL LENGTH, CUTOFF and RESONANCE; Track Swing and Chance against
-SWING/NUDGE and CHANCE/COND). PITCH's push switch is code 32: the key
-callback asks whether PITCH turned while it was held.
+SWING/NUDGE and CHANCE/COND). Code 32 is the one encoder push switch (the
+UI test's encoder-button list holds that code alone). It is taken to be
+LEVEL/DATA's, the knob the manual has pressed; it was first recorded here as
+PITCH's, with a note that its key callback asks whether PITCH turned while it
+was held, and neither reading has been checked against the callback.
 
 ### The audio codec
 
@@ -133,7 +136,7 @@ and constants (sector 0x1C0000, the same block layout), so digiemu prepares
 their card as it prepares the Digitakt's, and accepts a first boot only once
 the volume is mounted. On the Model:Samples, LOAD SAMPLES puts WAV files in
 `/incoming`; after the rebuild they are in the sample browser: WAVE opens
-it, LEVEL/DATA moves through the folders, and PITCH's push opens a folder and
+it, LEVEL/DATA moves through the folders, and LEVEL/DATA's push opens a folder and
 picks a sample for the track.
 
 The Model:Samples' factory samples are on the real device's storage, not in

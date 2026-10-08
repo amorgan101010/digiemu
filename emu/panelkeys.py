@@ -8,6 +8,9 @@ for YES/NO, Space/End/Home for PLAY/STOP/RECORD, the knobs on A-F and Z-V
 and the Monomachine does not sit on keys that layout leaves free, or on the
 nearest thing it has (` is the MM's bank-group key, BANK here).
 
+The Models have twelve parameter knobs in three rows of four, so their knobs
+take Q-R above A-F and Z-V, as the panel has them: see MODEL below.
+
 Holding a key holds the panel key. Shift LATCHES what you press until Shift
 is let go, as Gearmulator does; the panel window lets go of its mouse
 shift-click latches then too. Delete lets go of everything.
@@ -95,6 +98,43 @@ KNOBS = {
     'z': 'E', 'x': 'F', 'c': 'G', 'v': 'H',
     'g': 'LEVEL/DATA',
 }
+
+# The Model:Cycles and Model:Samples. They have no arrows, YES/NO or BANK:
+# BACK is on Backspace, and Enter is LEVEL/DATA's push switch, the only knob
+# that has one. The six pads are the bottom row's B to /, under the knobs as on
+# the panel, and play at the default velocity. TRACK is Tab, to hold while a
+# pad is hit; RETRIG takes the menu row's per-product O.
+MODEL = {
+    **{key: label for key, label in COMMON.items()
+       if label.isdigit() or label in ('PLAY', 'STOP', 'RECORD', 'PAGE',
+                                       'TEMPO')},
+    'BackSpace': 'BACK', 'Return': 'LEVEL/DATA',
+    'i': 'SETTINGS', 'o': 'RETRIG', 'p': 'PATTERN',
+    'Tab': 'TRACK',
+    'apostrophe': 'LFO',
+    **{key: 'T%d' % (i + 1) for i, key in enumerate(
+        ('b', 'n', 'm', 'comma', 'period', 'slash'))},
+}
+# The three keys above LFO, by product, right-aligned as the Digis' pages are.
+MODEL_PAGE_KEYS = ('k', 'l', 'semicolon')
+MODEL_CYCLES = {**MODEL,
+                **dict(zip(MODEL_PAGE_KEYS, ('MACHINE', 'PUNCH', 'GATE')))}
+MODEL_SAMPLES = {**MODEL,
+                 **dict(zip(MODEL_PAGE_KEYS, ('WAVE', 'LOOP', 'FLIP')))}
+MODEL_KEYS = {'Model:Cycles': MODEL_CYCLES, 'Model:Samples': MODEL_SAMPLES}
+MODEL_FUNC = 'FUNCTION'
+# The parameter knobs' keys, in the panel's order: three rows of four.
+MODEL_KNOB_GRID = 'qwerasdfzxcv'
+
+
+def model_knobs(order):
+    """-> keysym -> encoder label for a Model whose twelve parameter knobs
+    are `order`, left to right and top to bottom. VOLUME is above
+    LEVEL/DATA's G, and REVERB SIZE above DELAY TIME beside them."""
+    return {**dict(zip(MODEL_KNOB_GRID, order)),
+            'g': 'LEVEL/DATA', 't': 'VOLUME',
+            'y': 'REVERB SIZE', 'h': 'DELAY TIME'}
+
 TURN = {'minus': -1, 'equal': 1}
 PRESS_TURN = {'bracketleft': -1, 'bracketright': 1}
 FUNC_KEYS = ('Control_L', 'Control_R')
@@ -118,11 +158,15 @@ class Keyboard:
     `panel` supplies codes (label -> button code), enc_codes (label ->
     encoder code), press(code, latch), release(code, force), turn(code,
     step), release_everything(), after(ms, fn) -> id and after_cancel(id).
+    `keys` is keysym -> panel label, `knobs` keysym -> encoder label and
+    `func` the label of the key Ctrl holds.
     """
 
-    def __init__(self, panel, keys):
+    def __init__(self, panel, keys, knobs=KNOBS, func='FUNC'):
         self.panel = panel
         self.keys = keys
+        self.knobs = knobs
+        self.func_label = func
         self.held = {}          # keycode -> ('button', code) / ('knob', label)
         self.pending = {}       # keycode -> after id of a deferred release
         self.latched = set()    # button codes latched by keyboard Shift
@@ -181,7 +225,7 @@ class Keyboard:
         else:
             ctrl = bool(state & CONTROL_MASK)
         if ctrl and self.func is None:
-            code = self._code('FUNC')
+            code = self._code(self.func_label)
             if code is not None:
                 self.func = code
                 self.panel.press(code, latch=bool(state & SHIFT_MASK))
@@ -204,10 +248,10 @@ class Keyboard:
             return True
         if repeat or keycode in self.held:
             return True                  # a held key: nothing new to do
-        if key in KNOBS:
-            self.held[keycode] = ('knob', KNOBS[key])
+        if key in self.knobs:
+            self.held[keycode] = ('knob', self.knobs[key])
             self._end_press_turn()
-            self.knob, self.turned = KNOBS[key], False
+            self.knob, self.turned = self.knobs[key], False
             return True
         label = self.keys.get(key)
         code = self._code(label) if label else None

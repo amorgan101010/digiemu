@@ -697,10 +697,10 @@ From Aileen playing it on both devices. The artwork and the desktop side
 were made and run here; the Swift is **written and not built**.
 
 - **Pressing a knob.** A finger cannot press and turn. The app has a key of
-  its own, PUSH, between PATTERN and TRACK: while it is held a knob touched
-  is a knob pressed (key 32, the one push switch, down for as long as the
-  knob is touched), so a touch is a click and a drag is a press and turn.
-  The tap on PITCH that pushed it is gone. PUSH's cap is in both Models'
+  its own, PUSH, between PATTERN and TRACK. It is key 32, the one push
+  switch, which is LEVEL/DATA's (2026-10-08: it was first taken for PITCH's,
+  and PUSH pressed whichever knob was touched). A tap is a click; held while
+  LEVEL/DATA is dragged, a press and turn. No other knob goes through it. PUSH's cap is in both Models'
   key atlases (`tools/render_models.py`); the desktop window does not use
   it.
 - **The knob LEDs.** Each of the twelve parameter knobs has a lens beside
@@ -734,8 +734,8 @@ were made and run here; the Swift is **written and not built**.
 - `cfpoke` (new) works a machine's panel from the command line and prints
   its LEDs and screen.
 
-To check on a device: hold PUSH and touch LEVEL/DATA in a menu (a click);
-hold PUSH and drag a knob; in grid recording hold a step, turn a knob, and
+To check on a device: tap PUSH in a menu (a click); hold PUSH and drag
+LEVEL/DATA; in grid recording hold a step, turn a knob, and
 see its lens light; the page lights while a long pattern plays.
 
 ## What the Python side did per second (the scope that was ported)

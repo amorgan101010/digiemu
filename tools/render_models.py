@@ -145,7 +145,7 @@ def build(product):
     app=preview.copy()
     sprite,_=art.key_sprite(product,'PUSH',PUSH,False)
     app.alpha_composite(sprite,(PUSH[0]-art.PAD,PUSH[1]-art.PAD))
-    ImageDraw.Draw(app).text((PUSH[0]+PUSH[2]/2,PUSH[1]+PUSH[3]+14),'HOLD + KNOB TO PRESS',
+    ImageDraw.Draw(app).text((PUSH[0]+PUSH[2]/2,PUSH[1]+PUSH[3]+14),'PRESS LEVEL/DATA',
                              fill='#50584f',font=art.font(3),anchor='mm')
     app.save(out/(product.lower().replace(':','-')+'-app.png'))
     print(product, 'artwork and preview written')

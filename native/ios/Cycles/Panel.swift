@@ -5,9 +5,10 @@
 // ADC channel each pad, which LED each key lights, which the lens beside
 // each parameter knob and the four page lights).
 //
-// One key is the app's own: PUSH, between PATTERN and TRACK. A finger
-// cannot press a knob and turn it, so while PUSH is held a knob touched is
-// a knob pressed: touch it for a click, drag it for a press and turn.
+// One key is the app's own: PUSH, between PATTERN and TRACK. It is
+// LEVEL/DATA's push switch, the only knob that has one. A finger cannot
+// press a knob and turn it, so tap PUSH for a click, or hold it and drag
+// LEVEL/DATA for a press and turn.
 import SwiftUI
 import UIKit
 
@@ -15,8 +16,6 @@ enum ControlKind {
     case key(column: Int32, bit: Int32)
     case pad(channel: Int32)
     case knob(encoder: Int32)
-    /// The app's PUSH key: not a key of the machine's.
-    case push
 }
 
 struct Control: Identifiable {
@@ -58,8 +57,8 @@ enum Panel {
         23: (2, 5), 24: (2, 6), 25: (2, 7), 26: (3, 0), 27: (3, 1), 28: (3, 2), 29: (3, 3),
         30: (3, 4), 31: (3, 5), 32: (3, 7),
     ]
-    /// The knobs' push switch: key 32, which the device file has under
-    /// PITCH.
+    /// LEVEL/DATA's push switch: key 32 of the device file. The PUSH key
+    /// is that switch.
     static let pushSwitch: (column: Int32, bit: Int32) = (3, 7)
     static let pushKey = 200
     /// [panel] page_leds: the lights above PAGE, 1:4 to 4:4, placed as
@@ -127,7 +126,8 @@ enum Panel {
         key("PATTERN", 3, 64, 658, 86, 48)
         key("TRACK", 2, 392, 658, 86, 48)
         out.append(Control(
-            id: pushKey, label: "PUSH", kind: .push, rect: CGRect(x: 228, y: 658, width: 86, height: 48)))
+            id: pushKey, label: "PUSH",
+            kind: .key(column: pushSwitch.column, bit: pushSwitch.bit), rect: CGRect(x: 228, y: 658, width: 86, height: 48)))
         key("PAGE", 15, 1236, 658, 86, 48)
         for (i, label) in ["MACHINE", "PUNCH", "GATE", "LFO"].enumerated() {
             key(label, keyCode[label]!, 568, 128 + CGFloat(i) * 132, 56, 48)

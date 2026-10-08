@@ -266,7 +266,7 @@ class ShippedDeviceFilesTest(unittest.TestCase):
                                  '%s code %d' % (dev.name, code))
 
     def test_the_models_panels_are_complete(self):
-        """devices/model-*.toml: 31 keys and PITCH's push on 32 distinct scan
+        """devices/model-*.toml: 31 keys and LEVEL/DATA's push on 32 distinct scan
         bits, six pads on six ADC channels, sixteen named encoders, and an
         LED for every key and pad but the push, none shared."""
         by_name = {d.name: d for d in self.devices}

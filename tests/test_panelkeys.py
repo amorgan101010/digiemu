@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from emu import dnpanel, dtpanel, panelkeys                        # noqa: E402
+from emu import dnpanel, dtpanel, mdpanel, panelkeys               # noqa: E402
 from emu.panelkeys import SHIFT_MASK, Keyboard                     # noqa: E402
 
 
@@ -54,6 +54,10 @@ class FakePanel:
 KC = {'F1': 67, 'F3': 69, 'space': 65, 'a': 38, 's': 39, 'g': 42,
       'equal': 21, 'minus': 20, 'bracketright': 35, 'Shift_L': 50,
       'Control_L': 37, 'Delete': 119, '1': 10, 'Tab': 23}
+
+
+MODEL_KC = {'Control_L': 37, 'g': 42, 'b': 56, 'k': 45, 'q': 24, 'w': 25,
+            'Return': 36, 'equal': 21, 'bracketright': 35}
 
 
 class Keys(unittest.TestCase):
@@ -238,6 +242,101 @@ class Coverage(unittest.TestCase):
                     set(panel.BUTTONS) - mapped - BY_OTHER_MEANS, set())
                 self.assertLessEqual(set(panelkeys.KNOBS.values()),
                                      set(panel.ENCODERS))
+
+    def test_every_model_key_pad_and_knob_has_a_computer_key(self):
+        for name in mdpanel.KNOBS:
+            with self.subTest(panel=name):
+                buttons, encoders = mdpanel.layout(name)
+                keys, knobs = mdpanel.keys(name)
+                mapped = set(keys.values())
+                self.assertEqual(mapped - set(buttons), {'LEVEL/DATA'})
+                self.assertEqual(
+                    set(buttons) - mapped, {panelkeys.MODEL_FUNC})
+                self.assertEqual(set(knobs.values()), set(encoders))
+                self.assertEqual(len(knobs), len(encoders))
+
+    def test_no_computer_key_is_both_a_key_and_a_knob(self):
+        tables = [(p.KEYS, p.KNOB_KEYS)
+                  for p in (dtpanel.DigitaktPanel, dnpanel.DigitonePanel)]
+        tables += [mdpanel.keys(name) for name in mdpanel.KNOBS]
+        turns = set(panelkeys.TURN) | set(panelkeys.PRESS_TURN)
+        for keys, knobs in tables:
+            self.assertEqual(set(keys) & set(knobs), set())
+            self.assertEqual((set(keys) | set(knobs)) & turns, set())
+
+
+class Model(unittest.TestCase):
+    """A Model: FUNCTION for FUNC, knobs by name, LEVEL/DATA the one that pushes."""
+
+    def setUp(self):
+        self.panel = FakePanel(('1', 'FUNCTION', 'LEVEL/DATA', 'T1', 'MACHINE'))
+        self.panel.enc_codes = {'PITCH': 13, 'DECAY': 1, 'LEVEL/DATA': 4}
+        keys, knobs = mdpanel.keys('Model:Cycles')
+        self.kb = Keyboard(self.panel, keys, knobs, panelkeys.MODEL_FUNC)
+        self.code = self.panel.codes
+
+    def key(self, down, keysym, state=0):
+        return self.kb.key(down, keysym, MODEL_KC[keysym], state)
+
+    def test_ctrl_holds_function(self):
+        self.key(True, 'Control_L')
+        self.assertEqual(self.panel.take(),
+                         [('press', self.code['FUNCTION'], False)])
+        self.key(False, 'Control_L')
+        self.assertEqual(self.panel.take(),
+                         [('release', self.code['FUNCTION'])])
+
+    def test_keys_and_pads(self):
+        for keysym, label in (('b', 'T1'), ('k', 'MACHINE'),
+                              ('Return', 'LEVEL/DATA')):
+            self.key(True, keysym)
+            self.assertEqual(self.panel.take(),
+                             [('press', self.code[label], False)])
+            self.key(False, keysym)
+            self.panel.elapse()
+            self.panel.take()
+
+    def test_knobs_turn_by_name(self):
+        self.key(True, 'w')                      # DECAY, second in the grid
+        self.key(True, 'equal')
+        self.assertEqual(self.panel.take(), [('turn', 1, 1)])
+
+    def test_only_level_data_clicks(self):
+        for keysym, clicks in (('g', True), ('q', False)):
+            self.key(True, keysym)
+            self.key(False, keysym)
+            self.panel.elapse()
+            pitch = self.code['LEVEL/DATA']
+            self.assertEqual(self.panel.take(),
+                             [('press', pitch, False), ('release', pitch)]
+                             if clicks else [])
+
+    def test_a_press_turn_without_a_push_switch_is_a_turn(self):
+        self.key(True, 'w')
+        self.key(True, 'bracketright')
+        self.assertEqual(self.panel.take(), [('turn', 1, 1)])
+
+    def test_level_data_press_turns(self):
+        self.key(True, 'g')
+        self.key(True, 'bracketright')
+        self.assertEqual(self.panel.take(),
+                         [('press', self.code['LEVEL/DATA'], False)])
+        self.panel.elapse()
+        self.assertEqual(self.panel.take(), [('turn', 4, 1)])
+
+    def test_the_window_takes_a_keyboard_press(self):
+        """ModelPanel.press takes the keyboard's latch, as the Digitakt's
+        does, for a key and for a pad (which plays at the default)."""
+        emu = type('Emu', (), {})()
+        emu.device = type('Dev', (), {'pads': {33: 5}})()
+        emu.inbox = []
+        w = object.__new__(mdpanel.ModelPanel)   # no window: press only
+        w.emu, w._paint = emu, lambda code: None
+        w.held, w.latched = set(), set()
+        w.press(5, latch=True)
+        w.press(33, latch=False)
+        self.assertEqual(emu.inbox, [('press', 5, 0), ('press', 33, 0)])
+        self.assertEqual((w.held, w.latched), ({5, 33}, {5}))
 
 
 if __name__ == '__main__':

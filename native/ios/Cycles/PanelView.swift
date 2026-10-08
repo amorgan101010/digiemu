@@ -65,7 +65,7 @@ struct PanelView: View {
             if control.id == Panel.pushKey {
                 // The app's own key: its legend is not on the plate.
                 context.draw(
-                    Text("HOLD + KNOB TO PRESS").font(.system(size: 9)).foregroundColor(Color(hex: 0x50584f)),
+                    Text("PRESS LEVEL/DATA").font(.system(size: 9)).foregroundColor(Color(hex: 0x50584f)),
                     at: CGPoint(x: control.rect.midX, y: control.rect.maxY + 14))
             }
             // The cap, up or down, then its light: the LED's colour, or the
@@ -156,8 +156,6 @@ final class TouchView: UIView {
         let control: Control
         var last: CGPoint
         var carry: CGFloat = 0
-        /// On a knob: it is pressed as well, for as long as it is touched.
-        var pushing = false
     }
     private var fingers: [UITouch: Finger] = [:]
     /// Points of drag for one detent: emu/dtpanel.py's six pixels.
@@ -187,24 +185,9 @@ final class TouchView: UIView {
                 let depth = min(1, max(0, (point.y - Panel.padTop) / Panel.padHeight))
                 engine?.send(.pad(index: channel, velocity: Int32((127 - depth * 97).rounded())))
             case .knob:
-                // With PUSH held, touching a knob presses it.
-                if state?.held.contains(Panel.pushKey) == true { push(touch) }
-            case .push:
-                // ... and so does PUSH coming down on knobs already touched.
-                for (other, finger) in fingers where finger.control.isKnob { push(other) }
+                break
             }
         }
-    }
-
-    /// Press the knob under this finger. The machine has one push switch,
-    /// so it goes down with the first knob pressed and up with the last.
-    private func push(_ touch: UITouch) {
-        guard var finger = fingers[touch], !finger.pushing else { return }
-        if !fingers.values.contains(where: \.pushing) {
-            engine?.send(.key(column: Panel.pushSwitch.column, bit: Panel.pushSwitch.bit, down: true))
-        }
-        finger.pushing = true
-        fingers[touch] = finger
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -234,12 +217,6 @@ final class TouchView: UIView {
             case let .pad(channel):
                 engine?.send(.pad(index: channel, velocity: 0))
             case .knob:
-                // The last pressed knob let go lets the switch up, whether
-                // or not PUSH is still held.
-                if finger.pushing, !fingers.values.contains(where: \.pushing) {
-                    engine?.send(.key(column: Panel.pushSwitch.column, bit: Panel.pushSwitch.bit, down: false))
-                }
-            case .push:
                 break
             }
         }

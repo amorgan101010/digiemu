@@ -46,8 +46,9 @@ page_leds = [52, 48, 49, 50]
 # code = [scan column, bit]: columns 0..3 of the FlexBus panel device. The
 # names, codes and LEDs are the factory UI test's (0x400521c8), checked
 # by pressing each from a fresh resume: what it drew and what it lit.
-# 32 is the PITCH knob's push switch (the key callback asks whether PITCH
-# turned while it was held).
+# 32 is the LEVEL/DATA knob's push switch, the only knob that has one (the
+# UI test's encoder-button list is that one code). Upstream had it as
+# PITCH's; the manual has LEVEL/DATA as the knob that is pressed.
 [panel.exceptions]
 1  = [1, 2]   # FUNCTION
 2  = [1, 5]   # TRACK
@@ -80,7 +81,7 @@ page_leds = [52, 48, 49, 50]
 29 = [3, 3]   # 14
 30 = [3, 4]   # 15
 31 = [3, 5]   # 16
-32 = [3, 7]   # PITCH
+32 = [3, 7]   # LEVEL/DATA (push)
 
 # Pad code = ADC channel: pad Tn is read on channel 6 - n (0x4010adc0).
 [panel.pads]
@@ -123,7 +124,7 @@ page_leds = [52, 48, 49, 50]
 29 = "14"
 30 = "15"
 31 = "16"
-32 = "PITCH"
+32 = "LEVEL/DATA"
 33 = "T1"
 34 = "T2"
 35 = "T3"
