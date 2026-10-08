@@ -56,7 +56,19 @@ impl Cpu {
 
 
 const CHUNK_BITS: u32 = 20;
-const CHUNK: usize = 1 << CHUNK_BITS;
+/// A megabyte: what guest memory is mapped in.
+pub const CHUNK: usize = 1 << CHUNK_BITS;
+pub const CHUNKS: usize = 4096;
+
+/// What a megabyte of guest memory is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ChunkKind {
+    None,
+    Ram,
+    Device,
+    /// Another view of this lower RAM megabyte.
+    Alias(usize),
+}
 
 /// What sits behind device memory. `access` is called before the guest's
 /// read or write of a device megabyte happens, as a Unicorn memory hook is:
@@ -129,6 +141,27 @@ impl Mem {
         self.map(target);
         let (i, j) = ((addr >> CHUNK_BITS) as usize, (target >> CHUNK_BITS) as usize);
         self.table[i] = self.table[j].wrapping_add(j << CHUNK_BITS).wrapping_sub(i << CHUNK_BITS);
+    }
+
+    /// How many megabytes have memory behind them.
+    pub fn mapped_chunks(&self) -> usize {
+        (0..CHUNKS).filter(|&i| !self.table[i].is_null() || !self.devices[i].is_null()).count()
+    }
+
+    /// What megabyte `i` is. Of the views of one RAM megabyte, the lowest
+    /// is the RAM and the others its aliases.
+    pub fn chunk_kind(&self, i: usize) -> ChunkKind {
+        if !self.devices[i].is_null() {
+            return ChunkKind::Device;
+        }
+        if self.table[i].is_null() {
+            return ChunkKind::None;
+        }
+        let host = |j: usize| self.table[j].wrapping_add(j << CHUNK_BITS);
+        match (0..i).find(|&j| !self.table[j].is_null() && host(j) == host(i)) {
+            Some(j) => ChunkKind::Alias(j),
+            None => ChunkKind::Ram,
+        }
     }
 
     pub fn is_device(&self, addr: u32) -> bool {

@@ -13,6 +13,7 @@ pub mod intfrc;
 pub mod ops;
 pub mod rtos;
 pub mod ssi;
+pub mod state;
 pub mod timers;
 pub mod trace;
 pub mod workload;

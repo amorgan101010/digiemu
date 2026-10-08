@@ -54,12 +54,40 @@ pub struct Panel {
     pub led_rows: [u8; 8],
     pub led_version: u64,
     /// Changes asked for and not yet applied, in the order they came.
-    key_want: Vec<((u8, u8), VecDeque<bool>)>,
-    key_since: [[i64; 8]; KEY_COLUMNS],
-    pad_want: Vec<(u8, VecDeque<u16>)>,
-    pad_since: [i64; PADS],
-    turns: [i32; ENCODERS],
-    turn_since: [i64; ENCODERS],
+    pub(crate) key_want: Vec<((u8, u8), VecDeque<bool>)>,
+    pub(crate) key_since: [[i64; 8]; KEY_COLUMNS],
+    pub(crate) pad_want: Vec<(u8, VecDeque<u16>)>,
+    pub(crate) pad_since: [i64; PADS],
+    pub(crate) turns: [i32; ENCODERS],
+    pub(crate) turn_since: [i64; ENCODERS],
+}
+
+impl Panel {
+    /// Lift every key and pad that is down or about to be, and drop the
+    /// turns not yet made: nobody is touching a panel that has just been
+    /// restored.
+    pub fn let_go(&mut self) {
+        for column in 0..KEY_COLUMNS as u8 {
+            for bit in 0..8 {
+                let queued = self.key_want.iter().find(|(pos, _)| *pos == (column, bit)).and_then(|(_, q)| q.back());
+                if *queued.unwrap_or(&(self.keys[column as usize] >> bit & 1 != 0)) {
+                    self.key(column, bit, false);
+                }
+            }
+        }
+        for index in 0..PADS as u8 {
+            let queued = self.pad_want.iter().find(|(i, _)| *i == index).and_then(|(_, q)| q.back());
+            if *queued.unwrap_or(&self.pads[index as usize]) != 0 {
+                self.pad(index, 0);
+            }
+        }
+        self.turns = [0; ENCODERS];
+    }
+
+    /// How many keys and pads have changes asked for and not yet applied.
+    pub fn changing(&self) -> (usize, usize) {
+        (self.key_want.len(), self.pad_want.len())
+    }
 }
 
 impl Default for Panel {

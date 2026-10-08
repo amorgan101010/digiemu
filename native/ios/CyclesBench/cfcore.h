@@ -27,3 +27,7 @@ void cfcore_turn(void *bench, int encoder, int steps);
 uint64_t cfcore_leds(void *bench);
 float cfcore_gain(void *bench);
 int cfcore_screen(void *bench, uint32_t pointer_at, uint8_t *out);
+
+// To keep it: the whole machine in a file cfcore_open takes.
+// With wait 0 the file is written by another thread after this returns.
+int cfcore_save(void *bench, const char *path, int wait);

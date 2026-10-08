@@ -22,9 +22,13 @@
 //!     uint64_t cfcore_leds(void *bench);
 //!     float cfcore_gain(void *bench);
 //!     int cfcore_screen(void *bench, uint32_t pointer_at, uint8_t *out);
+//!
+//! and to keep it: `cfcore_save` writes the whole machine to a file that
+//! `cfcore_open` takes in place of a starting state.
+//!
+//!     int cfcore_save(void *bench, const char *path, int wait);
 use crate::aot;
 use crate::machine::Machine;
-use crate::trace::Trace;
 use std::cell::RefCell;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 
@@ -65,8 +69,9 @@ impl Bench {
         if ips <= 0 {
             return Err("ips must be positive".into());
         }
-        let tr = Trace::read(path)?;
-        Ok(Bench { k: Machine::from_trace(&tr, ips)?, seen: (0, 0, 0, 0) })
+        let k = Machine::open(path, ips)?;
+        let seen = (k.now - k.idle_skipped, 0, k.idle_skipped, k.dev.borrow().raised);
+        Ok(Bench { k, seen })
     }
 
     /// Run `seconds` more of emulated time. The chunk is filled in even
@@ -106,9 +111,11 @@ impl Bench {
 pub const SCREEN_BYTES: usize = 1024;
 
 impl Bench {
-    /// Forget the recording's panel input: the panel is played live.
+    /// Forget the recording's panel input and anything held on the panel:
+    /// it is played live, and no finger is on it yet.
     pub fn live(&mut self) {
         self.k.inputs.clear();
+        self.k.dev.borrow_mut().panel.let_go();
     }
 
     /// Run until `frames` more audio frames have been played (or a little
@@ -136,6 +143,24 @@ impl Bench {
             result?;
         }
         Ok(())
+    }
+
+    /// Guest memory, zero where there is none.
+    pub fn peek(&self, addr: u32, out: &mut [u8]) {
+        self.k.m.read_bytes(addr, out);
+    }
+
+    /// The panel, as the C entry points work it.
+    pub fn key(&mut self, column: u8, bit: u8, down: bool) {
+        self.k.dev.borrow_mut().panel.key(column, bit, down);
+    }
+
+    pub fn pad(&mut self, index: u8, velocity: i32) {
+        self.k.dev.borrow_mut().panel.pad(index, velocity);
+    }
+
+    pub fn turn(&mut self, encoder: u8, steps: i32) {
+        self.k.dev.borrow_mut().panel.turn(encoder, steps);
     }
 
     /// The gain the output takes from the codec level the firmware's
@@ -244,6 +269,35 @@ pub unsafe extern "C" fn cfcore_gain(bench: *mut c_void) -> f32 {
 #[no_mangle]
 pub unsafe extern "C" fn cfcore_screen(bench: *mut c_void, pointer_at: u32, out: *mut u8) -> c_int {
     (*(bench as *mut Bench)).screen(pointer_at, &mut *(out as *mut [u8; SCREEN_BYTES])) as c_int
+}
+
+/// Write the machine to `path` (`machine::write_saved`: through
+/// `path.tmp`, the save before kept as `path.prev`). With `wait` 0 only
+/// the copy of the machine is made before this returns and another thread
+/// writes the file, so that the sound does not wait for the disk; a write
+/// that fails then is not reported. -> 0, or 1 with `cfcore_error` saying
+/// why.
+///
+/// # Safety
+/// `bench` must come from `cfcore_open` and `path` must be a
+/// NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn cfcore_save(bench: *mut c_void, path: *const c_char, wait: c_int) -> c_int {
+    let path = CStr::from_ptr(path).to_string_lossy().into_owned();
+    let result = (*(bench as *mut Bench)).k.save().and_then(|data| {
+        if wait != 0 {
+            return crate::machine::write_saved(&path, &data);
+        }
+        std::thread::spawn(move || crate::machine::write_saved(&path, &data));
+        Ok(())
+    });
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            fail(e);
+            1
+        }
+    }
 }
 
 /// -> the bench, or null with `cfcore_error` saying why.
