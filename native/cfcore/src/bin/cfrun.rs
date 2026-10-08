@@ -120,7 +120,7 @@ fn main() {
     let native = &d.audio;
     let executed = k.now - k.idle_skipped;
     eprintln!(
-        "{ran:.3} emulated s in {wall:.3} s of CPU: {:.4} s per emulated s; {} steps, {} interrupts, {:.0}M instructions run ({:.1}% of the time idle), {:.2}% of them interpreted",
+        "{ran:.3} emulated s in {wall:.3} s of wall time: {:.4} s per emulated s; {} steps, {} interrupts, {:.0}M instructions run ({:.1}% of the time idle), {:.2}% of them interpreted",
         wall / ran.max(1e-9),
         k.steps,
         d.raised,

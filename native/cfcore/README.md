@@ -111,7 +111,9 @@ target/release/cfrun RUN.trace --ips 211700000 [--seconds 120] [--wav DIR]
 ```
 
 `cfrun` takes only the starting state and the panel input from the
-recording. It prints the CPU time per emulated second, and compares the
+recording. `target/release/cfstart RUN.trace RUN.start` writes a file with
+just those (and the recorded audio), about 50 MB, which `cfrun` takes in
+place of the recording: use it where memory is short. It prints the CPU time per emulated second, and compares the
 audio it plays with the recording's: how long the two are bit-identical,
 then level and correlation, since its clock counts real instructions and
 the two runs drift apart by samples. `--wav` writes both as WAV files (to

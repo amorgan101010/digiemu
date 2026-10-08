@@ -153,18 +153,29 @@ impl Mem {
 
     /// Write from the host: no bus call, and missing memory becomes RAM.
     pub fn write_bytes(&mut self, addr: u32, data: &[u8]) {
-        for (i, b) in data.iter().enumerate() {
-            let a = addr.wrapping_add(i as u32);
+        let mut at = 0;
+        while at < data.len() {
+            let a = addr.wrapping_add(at as u32);
+            let n = (data.len() - at).min(CHUNK - (a as usize & (CHUNK - 1)));
             self.map(a);
-            unsafe { *self.any(a) = *b }
+            unsafe { std::ptr::copy(data[at..].as_ptr(), self.any(a), n) }
+            at += n;
         }
     }
 
     /// Read from the host: no bus call, zero where there is no memory.
     pub fn read_bytes(&self, addr: u32, out: &mut [u8]) {
-        for (i, b) in out.iter_mut().enumerate() {
-            let p = self.any(addr.wrapping_add(i as u32));
-            *b = if p.is_null() { 0 } else { unsafe { *p } };
+        let mut at = 0;
+        while at < out.len() {
+            let a = addr.wrapping_add(at as u32);
+            let n = (out.len() - at).min(CHUNK - (a as usize & (CHUNK - 1)));
+            let p = self.any(a);
+            if p.is_null() {
+                out[at..at + n].fill(0);
+            } else {
+                unsafe { std::ptr::copy(p, out[at..].as_mut_ptr(), n) }
+            }
+            at += n;
         }
     }
 

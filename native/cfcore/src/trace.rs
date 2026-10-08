@@ -99,6 +99,9 @@ pub struct Trace {
     pub raised: u64,
     /// Every region's memory when the recording ended.
     pub last: Vec<(u32, Vec<u8>)>,
+    /// How many bytes of the file the starting state takes: everything
+    /// before the items.
+    pub head: usize,
 }
 
 struct Reader<'a> {
@@ -303,6 +306,7 @@ impl Trace {
             emulated_ns: 0,
             raised: 0,
             last: Vec::new(),
+            head: r.at,
         };
         while r.at < data.len() {
             let item = match r.u8()? {
@@ -380,6 +384,44 @@ impl Trace {
             t.items.push(item);
         }
         Ok(t)
+    }
+
+    /// A recording with only what a run from its start needs: the starting
+    /// state as `data` has it, the first step's PC, the panel input with
+    /// its times, and the audio that was played (to compare with). The
+    /// result is a trace file too.
+    pub fn start_only(&self, data: &[u8]) -> Vec<u8> {
+        let mut out = data[..self.head].to_vec();
+        let mut at = None;
+        for (n, item) in self.items.iter().enumerate() {
+            match *item {
+                Item::StepStart(pc) if n == 0 => {
+                    out.push(1);
+                    out.extend_from_slice(&pc.to_le_bytes());
+                }
+                Item::SrcService(_, i) | Item::SrcStep(_, i) => at = Some(self.nums[i as usize]),
+                Item::Input(kind, i) => {
+                    if let Some(at) = at {
+                        out.extend_from_slice(&[20, 0]);
+                        out.extend_from_slice(&(at as u64).to_le_bytes());
+                    }
+                    out.extend_from_slice(&[26, kind]);
+                    for v in &self.nums[i as usize..i as usize + 3] {
+                        out.extend_from_slice(&(*v as i32).to_le_bytes());
+                    }
+                }
+                Item::Audio { off, len } => {
+                    out.push(25);
+                    out.extend_from_slice(&len.to_le_bytes());
+                    out.extend_from_slice(&self.blob[off as usize..(off + len) as usize]);
+                }
+                _ => {}
+            }
+        }
+        out.push(11);
+        out.extend_from_slice(&self.emulated_ns.to_le_bytes());
+        out.extend_from_slice(&self.raised.to_le_bytes());
+        out
     }
 
     pub fn read(path: &str) -> Result<Trace, String> {

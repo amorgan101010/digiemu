@@ -93,7 +93,7 @@ fn iteration_count(raw: u32) -> u32 {
 }
 
 /// The megabytes a channel's major loop will touch.
-fn span(base: u32, off: i32, citer: u32, nbytes: u32, modulo: u32) -> Vec<u32> {
+fn span(base: u32, off: i32, citer: u32, nbytes: u32, modulo: u32) -> impl Iterator<Item = u32> {
     let (base, off, citer, nbytes) = (base as i64, off as i64, citer as i64, nbytes as i64);
     let step = off.abs();
     let mut span = step * citer * (nbytes / step.max(1)).max(1);
@@ -111,7 +111,7 @@ fn span(base: u32, off: i32, citer: u32, nbytes: u32, modulo: u32) -> Vec<u32> {
     }
     let first = lo & !(MAP_PAGE - 1);
     let last = (lo + span - 1) & !(MAP_PAGE - 1);
-    (0..=(last - first) / MAP_PAGE).map(|i| (first + i * MAP_PAGE) as u32).collect()
+    (0..=(last - first) / MAP_PAGE).map(move |i| (first + i * MAP_PAGE) as u32)
 }
 
 fn read_ring(h: &mut dyn Host, mut addr: u32, n: u32, modulo: u32) -> Vec<u8> {
@@ -283,9 +283,9 @@ impl Bank {
         for _ in 0..MAX_LINKS {
             let t = Tcd::parse(&raw);
             let citer = iteration_count(t.citer);
-            let mut pages = span(t.saddr, t.soff, citer, t.nbytes, t.attr >> 11);
-            pages.extend(span(t.daddr, t.doff, citer, t.nbytes, (t.attr >> 3) & 0x1F));
-            if !pages.iter().all(|&p| h.mapped(p)) {
+            let mut pages = span(t.saddr, t.soff, citer, t.nbytes, t.attr >> 11)
+                .chain(span(t.daddr, t.doff, citer, t.nbytes, (t.attr >> 3) & 0x1F));
+            if !pages.all(|p| h.mapped(p)) {
                 return false;
             }
             if t.csr & CSR_ESG == 0 {

@@ -480,6 +480,28 @@ For the device runs: the library type-checks for `aarch64-apple-ios`
 Command Line Tools, so there is no iOS SDK to link against. Full Xcode is
 needed, and the disk had 14 GB free.
 
+## A small starting-state file, and cheaper copies (2026-10-07, desktop)
+
+After the arm64 run, on the Ryzen:
+
+- **`cfstart TRACE OUT`** cuts a recording down to what `cfrun` uses: the
+  starting state (the file's own bytes, copied), the panel input with its
+  times, and the audio Python played. For the 430 MB recording it is 50 MB
+  (`out/cfcore/cycles-play.start`), nearly all of it the 47 MB of guest
+  memory. `cfrun` on it peaks at 100 MB of memory, where the Mac saw
+  1.0-1.1 GB with the whole recording.
+- A run from the small file plays what a run from the whole recording
+  plays: `native.wav` is byte-identical over the 3.04 s and over 120 s.
+- **Copies.** `Mem::read_bytes` and `write_bytes` now copy a megabyte run
+  at a time (they looked up every byte), and the eDMA mapped check no
+  longer builds a list of pages. `cfreplay` agrees as before in both passes
+  (states, host reads, final memory, 31,501 exception entries, models,
+  audio), and both WAV files equal the ones the earlier build wrote. 120
+  emulated seconds: 0.219 s per emulated second here, from 0.229. Not yet
+  timed on arm64.
+- Not done: the buffers `edma.rs` and `ssi.rs` still allocate per transfer.
+- `cfrun` now says "wall time" for what it measures.
+
 ## What the Python side did per second (the scope that was ported)
 
 Counted before the port, for the playing Cycles, per emulated second at
@@ -510,8 +532,8 @@ Unicorn library already, so not in the counts: the block budget, the
 software eDMA transfers, FF1 and `rte`.
 
 Next: time it on the phone and the iPad, which is the plan's gate (it is
-built and timed for arm64 on the Mac, above; the devices need Xcode and a
-small starting-state file); then what a session needs beyond playing (the display out,
+built and timed for arm64 on the Mac, above; the devices need Xcode; the small
+starting-state file is `cfstart`'s, above); then what a session needs beyond playing (the display out,
 saving, the +Drive, starting without a Python-made state).
 
 ## What can be reused
