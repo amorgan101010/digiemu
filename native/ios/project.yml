@@ -1,0 +1,65 @@
+# Two apps around native/cfcore, in CyclesBench.xcodeproj, which xcodegen
+# makes from this: CyclesBench times the machine on a device, and Cycles
+# plays it (panel, screen and sound). The library and the starting state
+# are firmware-derived, so they are not here: build.sh puts them in
+# out/cfcore/ios/, which is ignored.
+name: CyclesBench
+options:
+  bundleIdPrefix: io.github.amorgan101010
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  CyclesBench:
+    type: application
+    platform: iOS
+    sources:
+      - CyclesBench
+      - path: ../../out/cfcore/ios/cycles-play.start
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.amorgan101010.cyclesbench
+        SWIFT_VERSION: "5.0"
+        SWIFT_OBJC_BRIDGING_HEADER: CyclesBench/cfcore.h
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../out/cfcore/ios
+        OTHER_LDFLAGS: -lcfcore
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ARCHS: arm64
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: CyclesBench
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIFileSharingEnabled: YES
+        INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+  Cycles:
+    type: application
+    platform: iOS
+    sources:
+      - Cycles
+      - path: ../../out/cfcore/ios/cycles-play.start
+        buildPhase: resources
+      # The drawn faceplate, shared with the desktop window.
+      - path: ../../emu/assets/panels/model-cycles
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.amorgan101010.cycles
+        SWIFT_VERSION: "5.0"
+        SWIFT_OBJC_BRIDGING_HEADER: Cycles/Bridge.h
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../out/cfcore/ios
+        OTHER_LDFLAGS: -lcfcore
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ARCHS: arm64
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Cycles
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIRequiresFullScreen: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"

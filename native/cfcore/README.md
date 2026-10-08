@@ -119,6 +119,39 @@ then level and correlation, since its clock counts real instructions and
 the two runs drift apart by samples. `--wav` writes both as WAV files (to
 somewhere ignored: they are the firmware's output).
 
+## On a device
+
+`src/ffi.rs` has the C entry points an app uses to run the machine a chunk
+at a time, and `../ios/` the benchmark app around them:
+
+```sh
+../ios/build.sh                      # libcfcore.a for iOS, and the Xcode project
+cd ../ios && xcodebuild -project CyclesBench.xcodeproj -scheme CyclesBench \
+  -configuration Release -destination generic/platform=iOS \
+  -derivedDataPath ../../out/cfcore/ios/derived \
+  -allowProvisioningUpdates DEVELOPMENT_TEAM=TEAM build
+xcrun devicectl device install app --device UDID \
+  ../../out/cfcore/ios/derived/Build/Products/Release-iphoneos/CyclesBench.app
+xcrun devicectl device process launch --device UDID \
+  io.github.amorgan101010.cyclesbench -- --seconds 600
+xcrun devicectl device copy from --device UDID --domain-type appDataContainer \
+  --domain-identifier io.github.amorgan101010.cyclesbench \
+  --source Documents/cfbench.log --destination cfbench.log
+target/release/cfchunks RUN.start --ips 211700000 --count 60   # the Mac's hashes
+```
+
+The same project has a second scheme, Cycles, which plays the machine:
+sound, the panel over the drawn faceplate in `emu/assets/panels/model-cycles`,
+the screen and the LEDs. Build and install it the same way
+(`-scheme Cycles`, `Cycles.app`, `io.github.amorgan101010.cycles`).
+`cfscreen RUN.start 401492f0` prints the screen it reads, on the Mac.
+
+They need xcodegen, a team chosen once in Xcode, Developer Mode on the
+device, and the developer trusted there after the first install. Both apps
+bundle the starting state and the translated blocks, so they are
+firmware-derived: they are built under `out/` and installed only on your
+own devices.
+
 ## Stretches without devices
 
 A workload file is a stretch of the render between two device accesses:

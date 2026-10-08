@@ -502,6 +502,118 @@ After the arm64 run, on the Ryzen:
 - Not done: the buffers `edma.rs` and `ssi.rs` still allocate per transfer.
 - `cfrun` now says "wall time" for what it measures.
 
+## On the iPhone 13 (2026-10-07)
+
+The first run on an Apple device: the whole native machine in an app on the
+iPhone 13 (iPhone14,5, A15), which runs iOS 26.6.2, not the 27.0.1 this
+plan assumed. Built on the M1 MacBook Air with Xcode 27.0 and signed with a
+free Personal Team. Not yet on the A1954 iPad, which is the gate.
+
+What was built:
+
+- `native/cfcore/src/ffi.rs`: C entry points that open `cfstart`'s file and
+  run the machine a chunk at a time. Each chunk reports its instructions,
+  interrupts, frames and an FNV-1a hash of the audio it played, then drops
+  the audio, so a long run does not grow.
+- `cfchunks`: the same chunks on the Mac, for the hashes to compare with.
+- `native/ios/`: CyclesBench, a small SwiftUI app around those entry points
+  (`build.sh` builds the library for `aarch64-apple-ios`, the default
+  baseline CPU, and generates the project with xcodegen). It runs chunks of
+  10 emulated seconds on a thread of its own and logs each one's wall and
+  thread CPU time, the thermal state and the memory footprint, on screen and
+  to `Documents/cfbench.log`. Deployment target iOS 17.0, for the iPad.
+
+The Mac first, with the desktop's cheaper copies: `cfrun` on
+`cycles-play.start` takes 0.1665 and 0.1647 s per emulated second over 120
+s (6.0x, from 0.182), and peaks at 161 MB. The 3.04 s check is unchanged
+(32,577 identical frames, 31,158 interrupts).
+
+The phone, 600 emulated seconds in 60 chunks, the screen on, on USB power:
+
+| | iPhone 13 | M1 MacBook Air (`cfchunks`) |
+| --- | --- | --- |
+| Wall per emulated second, mean | 0.1728 s (5.79x) | 0.1738 s (5.75x) |
+| Slowest chunk | 0.1950 s (5.13x) | 0.2110 s |
+| First chunk | 0.1529 s (6.54x) | |
+| Chunk 30 | 0.1682 s (5.95x) | |
+| Chunk 60 | 0.1907 s (5.24x) | |
+
+- **The same audio.** All 60 chunks' hashes equal the Mac's, so the 600 s
+  of audio (28.8M frames) are the same bytes, and each chunk's instruction,
+  interpreted and interrupt counts are equal too.
+- **It slows as it warms**, by about 25% over the 100 s of wall time the
+  run took: 0.153 at the start, 0.168 halfway, 0.19 at the end. The thermal
+  state read "fair" throughout, from the first chunk. Unpaced, this is one
+  core flat out, which a paced app would not do, so it is the worst case.
+  [O] Where it settles: 30 minutes was not run.
+- **CPU time equals wall time** (0.1728 both), so the thread was not
+  descheduled or moved to a slow core.
+- **Memory**: 57 MB after opening, 64 MB at the end.
+- **Launch**: started from the Mac with `devicectl device process launch`
+  and no debugger. [O] Launched by hand with the Mac disconnected, in
+  airplane mode, and after a restart: not done.
+
+A first 120 s run had 11 of 12 hashes equal. The twelfth differed because
+the app asked for a slightly shorter last chunk (32 frames fewer), not
+because the machine did: the app now runs whole chunks, and the 60 above
+are from that build.
+
+## On the iPad, and playing it (2026-10-07)
+
+**The gate.** The same CyclesBench build on the A1954 iPad (iPad7,6, A10
+Fusion, iPadOS 17.7.11), started from the Mac with no debugger, on USB
+power, the screen on. It was asked for 600 emulated seconds; 52 chunks ran
+before another app was launched over it, which suspended it.
+
+| | iPad (A10) | Target |
+| --- | --- | --- |
+| Chunks 7 to 51, wall per emulated second | 0.293-0.332 s, mean 0.298 (3.4x) | 1.3x |
+| Chunks 1 to 6 | 0.373-0.409 s (2.4x-2.7x) | |
+| Chunks 1 to 51, mean | 0.309 s (3.2x) | |
+
+- **The same audio.** All 52 chunks' hashes equal the Mac's, and the
+  instruction, interpreted and interrupt counts with them.
+- **No throttling seen**: the thermal state read "nominal" in every chunk,
+  and the run got faster after the first minute, not slower. [O] Why the
+  first six chunks are slower was not looked into (the app had just been
+  installed and launched).
+- **Memory**: 55 MB after opening, 62 MB at the end.
+- The plan's estimate for the A10 was half the desktop, about 2.1x. It is
+  3.4x: 0.30 s against the Ryzen's 0.22-0.23 s.
+- Chunk 52 is not in the figures: its wall time (0.444) is over its CPU
+  time (0.358) because the app was being put in the background.
+- [O] The whole 600 s, 30 minutes, and a launch by hand with the Mac
+  disconnected: not done on either device.
+
+**Playing it.** A second app in `native/ios/`, Cycles, plays the machine on
+both devices: sound, the panel, the screen and the LEDs. It starts from the
+same bundled state (the factory pattern playing) with the recording's panel
+input dropped, and keeps nothing when it closes.
+
+- **Sound.** One thread runs the machine in slices of 128 frames whenever
+  the output has less than 16 ms waiting, into a ring with no lock that an
+  `AVAudioSourceNode` reads. The session asks for 48 kHz and a 5 ms buffer.
+  The output follows the codec level the firmware's VOLUME sets, as
+  `emu/modelboard.py`'s `output_gain` does.
+- **The panel** is `emu/mdpanel.py`'s layout over the drawn faceplate in
+  `emu/assets/panels/model-cycles` (plate, caps, light masks), with the
+  wiring from `devices/model-cycles.toml`. Each finger is its own control,
+  so a key or trig can be held while a knob turns. A knob turns by dragging
+  (6 points a detent, as the window); a tap on PITCH is its push switch; a
+  pad's velocity is where it is touched.
+- **The screen** is read from the frame buffer the pointer at 0x401492f0
+  names, up to 30 times a second (`cfscreen` prints the same read on the
+  Mac). It is read whenever the timer says, not at the firmware's swap, so
+  a frame can be torn. The second address `emu/symbols.py` finds near it
+  (0x4014553c) does not hold a buffer pointer in this state.
+- Aileen played it on the iPhone 13 and reports that it looks and works
+  well, sound included. It is installed and running on the iPad; nobody has
+  reported on it there yet.
+- Not measured: latency from touch to sound, underruns, and the CPU the
+  app takes while playing.
+- Not there: saving, the +Drive, MIDI, background audio, starting from
+  power-on, and a layout for the phone (it is the window's, scaled down).
+
 ## What the Python side did per second (the scope that was ported)
 
 Counted before the port, for the playing Cycles, per emulated second at
@@ -531,10 +643,9 @@ eDMA request paths, the MOVEC patches, and the fault hook. Native in the
 Unicorn library already, so not in the counts: the block budget, the
 software eDMA transfers, FF1 and `rte`.
 
-Next: time it on the phone and the iPad, which is the plan's gate (it is
-built and timed for arm64 on the Mac, above; the devices need Xcode; the small
-starting-state file is `cfstart`'s, above); then what a session needs beyond playing (the display out,
-saving, the +Drive, starting without a Python-made state).
+Next (the gate is passed: 5.8x on the phone, 3.4x on the iPad, above):
+what a session needs beyond playing (saving, the +Drive, starting without
+a Python-made state).
 
 ## What can be reused
 

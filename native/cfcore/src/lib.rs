@@ -5,6 +5,7 @@
 pub mod board;
 pub mod cpu;
 pub mod edma;
+pub mod ffi;
 pub mod insn;
 pub mod interp;
 pub mod machine;
