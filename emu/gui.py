@@ -1334,8 +1334,10 @@ class Emulator(threading.Thread):
                 return
             self._led_from = panel.led_version
             lit = panel.lit()
+            named = (set(self.device.leds) | set(self.device.page_leds)
+                     | set(self.device.knob_leds))
             now = {led: (MODEL_LED if led in lit else (0, 0, 0))
-                   for led in self.device.leds}
+                   for led in named}
             if now != self.leds:
                 self.leds = now
                 self.led_version += 1

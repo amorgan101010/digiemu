@@ -38,6 +38,11 @@ linear_channels = 0
 encoders = 16
 encoder_counts = 1
 
+# The four page lights above PAGE, 1:4 to 4:4: the LED table's entries 31
+# to 34, lit one after another by stepping through the pages in grid
+# recording.
+page_leds = [52, 48, 49, 50]
+
 # code = [scan column, bit]: columns 0..3 of the FlexBus panel device. The
 # names, codes and LEDs are the factory UI test's (0x400521c8), checked
 # by pressing each from a fresh resume: what it drew and what it lit.
@@ -186,6 +191,24 @@ encoder_counts = 1
 46 = 29
 47 = 30
 51 = 15
+
+# LED id -> encoder code: the lens beside each parameter knob, lit while a
+# step is held for every parameter locked on it. The LED table's entries 35
+# to 46 (0x4010abfc on Model:Cycles 1.13), each seen to light by holding a
+# step in grid recording and turning that knob.
+[panel.knob_leds]
+26 = 13
+34 = 1
+32 = 2
+41 = 3
+27 = 14
+24 = 5
+33 = 6
+42 = 7
+15 = 15
+25 = 9
+35 = 10
+43 = 11
 
 [[panel.group]]
 name = "trigs"

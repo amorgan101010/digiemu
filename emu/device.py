@@ -77,7 +77,7 @@ class Device:
     def __init__(self, name, short, firmwares, linear_channels, encoders,
                  exceptions, groups, path=None, intro_channels=(),
                  intro_unblocks_frame_sem=True, post_intro_ips=0,
-                 labels=None, leds=None, page_leds=(), audio=None,
+                 labels=None, leds=None, page_leds=(), knob_leds=None, audio=None,
                  sysex_id=None, os_stream_id=None, card_ekfs=True,
                  panel_kind=None, encoder_counts=1, ddr_bytes=None,
                  ui_card=None, straps=None, pads=None, encoder_labels=None,
@@ -133,6 +133,8 @@ class Device:
         # Empty for a device whose LED stream has not been decoded.
         self.leds = dict(leds or {})
         self.page_leds = tuple(page_leds)
+        # LED id -> encoder code: a lens beside a knob (the Models').
+        self.knob_leds = dict(knob_leds or {})
         # How to run and record the audio output ([audio] in the device
         # file): ssi_profile, request_hz, rate, sample_bits. None for a
         # device whose audio path has not been modelled.
@@ -258,6 +260,7 @@ def load(path):
         labels={int(k): str(v) for k, v in panel.get('labels', {}).items()},
         leds={int(k): int(v) for k, v in panel.get('leds', {}).items()},
         page_leds=[int(v) for v in panel.get('page_leds', ())],
+        knob_leds={int(k): int(v) for k, v in panel.get('knob_leds', {}).items()},
         audio=_audio(raw.get('audio'), path),
         sysex_id=_sysex_byte(dev, 'sysex_id', path),
         os_stream_id=_sysex_byte(dev, 'os_stream_id', path),

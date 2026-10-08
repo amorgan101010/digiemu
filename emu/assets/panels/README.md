@@ -15,7 +15,8 @@ uv run --with pillow python tools/render_models.py
 Pillow and the font are build tools only. Runtime uses Tk and Python's
 standard library; the portable app bundles the generated assets.
 
-- `plate.png`: powder coat, fasteners, knobs, narrow display recess and legends.
+- `plate.png`: powder coat, fasteners, knobs, narrow display recess and legends;
+  on the Models, the dark lens beside each parameter knob and the page lights.
 - `keys.png`: normal/pressed cap atlas; columns are the two states.
 - `masks.png`: alpha coverage for browser illumination in firmware RGB.
 - `skin.json`: atlas rows and compressed alpha masks for the desktop renderer.

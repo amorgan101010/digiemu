@@ -1,6 +1,7 @@
 """Build original Model faceplates and key atlases: python tools/render_models.py."""
 import base64
 import json
+import math
 import zlib
 
 import render_panel as art
@@ -18,11 +19,44 @@ def model_icon(mask, label, x, y, w, h, ink=255):
     if label in mdpanel.PADS:
         art.text(mask, (cx, cy), label, 22, ink, bold=True)
     elif label == 'LFO':
-        art.line(mask, [(cx-13,cy), (cx-6,cy-7), (cx+6,cy+7), (cx+13,cy)], ink, 2.5)
+        # One cycle of a sine.
+        art.line(mask, [(cx+t, cy-8*math.sin(t/13*math.pi)) for t in range(-13, 14)], ink, 2.5)
+    elif label == 'MACHINE':
+        # A drum: its head, its shell laced with tension lines, and the
+        # rim at the bottom.
+        art.ellipse(mask, (cx-12, cy-12, cx+12, cy-4), None, ink, 2.2)
+        art.line(mask, [(cx-12,cy-8), (cx-12,cy+6)], ink, 2.2)
+        art.line(mask, [(cx+12,cy-8), (cx+12,cy+6)], ink, 2.2)
+        rim = lambda t: cy + 6 + 4.5 * math.sin(math.acos(max(-1, min(1, t / 12))))
+        art.line(mask, [(cx+t, rim(t)) for t in range(-12, 13)], ink, 2.2)
+        head = lambda t: cy - 8 + 4 * math.sin(math.acos(max(-1, min(1, t / 12))))
+        art.line(mask, [(cx-12, head(-12)), (cx-8, rim(-8)), (cx-4, head(-4)), (cx, rim(0)),
+                        (cx+4, head(4)), (cx+8, rim(8)), (cx+12, head(12))], ink, 1.4)
+    elif label == 'PUNCH':
+        # A file folder: its tab, then its body.
+        art.line(mask, [(cx-12,cy+9), (cx-12,cy-9), (cx-4,cy-9), (cx-1,cy-5), (cx+12,cy-5),
+                        (cx+12,cy+9), (cx-12,cy+9)], ink, 2.2)
+        art.line(mask, [(cx-12,cy-1), (cx+12,cy-1)], ink, 1.6)
+    elif label == 'GATE':
+        # An envelope: up fast, down to a level, held, then let go.
+        art.line(mask, [(cx-13,cy+9), (cx-7,cy-10), (cx-1,cy), (cx+7,cy), (cx+13,cy+9)], ink, 2.5)
+    elif label == 'LOOP':
+        # Once round and back to the start.
+        art.line(mask, [(cx+10*math.cos(a*math.pi/180), cy+10*math.sin(a*math.pi/180)) for a in range(-50, 251, 10)], ink, 2.5)
+        end = 250*math.pi/180
+        hx, hy = cx+10*math.cos(end), cy+10*math.sin(end)
+        back = end - math.pi/2          # against the way the arc runs
+        art.line(mask, [(hx+8*math.cos(back-.6), hy+8*math.sin(back-.6)), (hx, hy),
+                        (hx+8*math.cos(back+.6), hy+8*math.sin(back+.6))], ink, 2.5)
+    elif label == 'PUSH':
+        # A knob from the side, and the arrow that presses it.
+        art.line(mask, [(cx,cy-13), (cx,cy-3)], ink, 2.5)
+        art.line(mask, [(cx-5,cy-8), (cx,cy-2), (cx+5,cy-8)], ink, 2.5)
+        art.rr(mask, (cx-11, cy+3, cx+11, cy+11), 3, None, ink, 2.2)
     elif label == 'BACK':
         art.line(mask, [(cx-10,cy-3), (cx+9,cy-3), (cx+9,cy+9), (cx-5,cy+9)], ink, 2.5)
         art.line(mask, [(cx-4,cy-9), (cx-11,cy-3), (cx-4,cy+3)], ink, 2.5)
-    elif label in ('LOOP', 'PUNCH', 'FLIP', 'GATE'):
+    elif label == 'FLIP':
         art.line(mask, [(cx-12,cy-6), (cx+10,cy-6), (cx+4,cy-12)], ink, 2.5)
         art.line(mask, [(cx+12,cy+6), (cx-10,cy+6), (cx-4,cy+12)], ink, 2.5)
     else:
@@ -30,6 +64,13 @@ def model_icon(mask, label, x, y, w, h, ink=255):
 
 
 art.icon = model_icon
+# Clear of each other: the underline sits closer to the number, and the
+# beat frame is the lit rim's rectangle.
+art.UNDERLINE = 11
+art.BEAT_FRAME = (7, 6, 10)
+# The app's own key (native/ios): held while a knob is touched, it is the
+# knob's push switch. Not on the desktop window, which clicks the knob.
+PUSH = (228, 658, 86, 48, None, None)
 
 def build(product):
     samples = product == 'Model:Samples'
@@ -57,6 +98,10 @@ def build(product):
     for label, (x,y,w,h,sub,_) in buttons.items():
         if sub:
             art.text(image, (x+w/2,y+h+14), sub, 9, '#50584f')
+    for label in mdpanel.KNOBS[product]:
+        x, y = panellayout.knob_light(*encoders[label])
+        art.rr(image, (x-6, y-6, x+6, y+6), 2, '#7d8379', '#9aa095', 1)
+        art.rr(image, (x-4.5, y-4.5, x+4.5, y+4.5), 1.5, '#343a33')
     for i,(x,y) in enumerate(panellayout.page_lights(buttons['PAGE'])):
         art.rr(image,(x-4,y-4,x+4,y+4),2,'#383f35')
         art.text(image,(x,y+13),f'{i+1}:4',8,ink)
@@ -65,6 +110,7 @@ def build(product):
     plate=image.resize((mdpanel.PANEL_W,mdpanel.PANEL_H),Image.Resampling.LANCZOS)
     plate.save(dest/'plate.png',optimize=True)
     specs={k:v for k,v in buttons.items() if k not in encoders}
+    specs['PUSH']=PUSH
     art.TW,art.TH=112,100
     atlas=Image.new('RGBA',(224,100*len(specs)))
     masks=Image.new('RGBA',atlas.size)
@@ -78,7 +124,7 @@ def build(product):
             mask=Image.new('RGBA',(112,100),'white');mask.putalpha(coverage)
             masks.alpha_composite(mask,(int(pressed)*112,row*100))
             entry['masks'].append(base64.b64encode(zlib.compress(coverage.tobytes())).decode())
-            if not pressed:
+            if not pressed and label != 'PUSH':
                 preview.alpha_composite(sprite,(spec[0]-art.PAD,spec[1]-art.PAD))
         meta['keys'][label]=entry
     atlas.save(dest/'keys.png',optimize=True)

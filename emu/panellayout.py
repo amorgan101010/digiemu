@@ -87,6 +87,12 @@ def page_lights(spec, count=4):
             for i in range(count)]
 
 
+def knob_light(x, y, r):
+    """The centre of the square LED lens beside a Model's parameter knob:
+    up and to the left of it."""
+    return (x - r - 16, y - r + 10)
+
+
 def face(product, label):
     if product.startswith('Model:'):
         if product == 'Model:Samples' and (label.isdigit() or label in ('RECORD', 'PLAY', 'STOP', 'LOOP', 'FLIP')):

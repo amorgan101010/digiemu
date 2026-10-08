@@ -23,6 +23,10 @@ from emu import panellayout as layout
 
 S = 3
 PAD, TW, TH = 10, 96, 84
+# A step key's underline below the middle of its number, and the frame on
+# the first step of each beat as insets (left and right, top, bottom).
+UNDERLINE = 14
+BEAT_FRAME = (8, 7, 11)
 FONT = Path(subprocess.check_output(
     ['fc-match', '-f', '%{file}', 'Liberation Sans'], text=True).strip())
 BOLD = FONT.with_name('LiberationSans-Bold.ttf')
@@ -169,7 +173,7 @@ def icon(mask, label, x, y, w, h, ink=255):
         size = 22 if label.isdigit() else 10 if len(label) > 3 else 11
         text(mask, (cx, cy), label, size, ink, bold=not label.isdigit())
         if label.isdigit():
-            line(mask, [(cx-8, cy+14), (cx+8, cy+14)], ink, 2)
+            line(mask, [(cx-8, cy+UNDERLINE), (cx+8, cy+UNDERLINE)], ink, 2)
 
 
 def key_sprite(product, label, spec, pressed):
@@ -191,7 +195,8 @@ def key_sprite(product, label, spec, pressed):
     ink = Image.new('L', image.size)
     icon(ink, label, x, y+shift, w, h)
     if label in ('1', '5', '9', '13'):
-        rr(ink, (x+8, y+7+shift, x+w-8, y+h-11+shift), 3, None, 190, 1.3)
+        side, top, bottom = BEAT_FRAME
+        rr(ink, (x+side, y+top+shift, x+w-side, y+h-bottom+shift), 3, None, 190, 1.3)
     color = '#777670' if label.isdigit() and int(label) >= 9 and product == 'Digitone' else '#e2e3df'
     tint = Image.new('RGBA', image.size, rgb(color) + (255,))
     tint.putalpha(ink)

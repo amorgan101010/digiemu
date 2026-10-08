@@ -599,8 +599,9 @@ input dropped, and keeps nothing when it closes.
   `emu/assets/panels/model-cycles` (plate, caps, light masks), with the
   wiring from `devices/model-cycles.toml`. Each finger is its own control,
   so a key or trig can be held while a knob turns. A knob turns by dragging
-  (6 points a detent, as the window); a tap on PITCH is its push switch; a
-  pad's velocity is where it is touched.
+  (6 points a detent, as the window); a tap on PITCH is its push switch
+  (since replaced by the PUSH key, below); a pad's velocity is where it is
+  touched.
 - **The screen** is read from the frame buffer the pointer at 0x401492f0
   names, up to 30 times a second (`cfscreen` prints the same read on the
   Mac). It is read whenever the timer says, not at the firmware's swap, so
@@ -618,6 +619,118 @@ input dropped, and keeps nothing when it closes.
   pale knobs; PITCH cannot be held down while it turns; the four page
   lights by DELAY TIME are the plate's dark ones (the device file names no
   LEDs for them, so the window does not light them either).
+
+## Keeping the machine between launches (2026-10-07, desktop)
+
+Saving here means the whole machine written to a file and read back, so
+the app opens where it was left: the pattern as edited, the screen, the
+sequencer's position. It is not the firmware's own project save, which
+writes to the +Drive: the native machine has no +Drive (below).
+
+In Rust, checked on the Ryzen:
+
+- `src/state.rs`: `Machine::save` and `Machine::restore`. The file has the
+  CPU, every megabyte of guest memory with its kind (RAM, device, or
+  another view of RAM), and every device model whole, the panel's queued
+  changes included. The clock is kept as it is. 39-45 MB; megabytes that
+  are all zero take no room. Here the copy of the machine takes 12 ms and
+  writing the file 15-20 ms. [O] Neither is timed on a device.
+- **A restored machine carries on as one never stopped.** At 29 moments
+  through the recording's panel input (one with a key change still queued)
+  and at 5 and 7 s: run to the moment, save to a file, restore it in a new
+  process, run 3-4 s more. The machine it comes to, saved again, is the
+  same bytes as an unbroken run's: memory, CPU, models and all the audio
+  played. 0 of the points differ.
+- **The check can fail.** With the restore broken on purpose, four of six
+  ways were caught (`render.since` dropped, `ssi.next` moved, `key_since`
+  moved, `idle.spins` moved). The other two changed fields that were zero
+  at that moment (`clock.pending`, the panel's `turns`), so they could not
+  show. [O] No save point had turns still to make or a pad held.
+- `cfcore_save(bench, path, wait)` in `src/ffi.rs` writes through
+  `path.tmp` and keeps the save before as `path.prev`; with `wait` 0 the
+  file is written by another thread. `cfcore_open` takes either kind of
+  file. Through the app's chunk path (`cfchunks`), a machine saved at 4 s
+  plays its second and third 2 s chunks with the hashes an unbroken run
+  has there; its first is not comparable (`cfsave` keeps the audio already
+  played in the machine, which the app does not).
+- `cfcore_live` now also lifts every key and pad that was down when the
+  machine was saved, and drops turns not yet made: a restored panel has no
+  finger on it. On the bundled state it changes nothing.
+- Unchanged by this: `cfreplay` agrees as before, and the 120 s WAV equals
+  the earlier builds'. (Those two, and the 29 points, were run before the
+  last changes to how the file is written; three points were run again
+  after, on a build without the translated blocks.)
+
+In the app, **written here and not built or run** (this machine has no
+Xcode): `Engine.swift` opens `Documents/cycles.save` when there is one and
+the bundled state otherwise; saves when the app goes to the background
+(inside a background task) and a minute after the panel was last touched;
+and sets aside a kept machine that does not open or that stops in its
+first two seconds (`cycles.save.bad`). The save while it plays first fills
+the output's ring (about 150 ms of sound) to cover the copy, and leaves the
+file to another thread. [O] Whether that save is heard on the iPad. `project.yml` shows the app's Documents in the Files
+app, which is the only way back to the bundled state for now: delete
+`cycles.save` there.
+
+To check on a device: change the pattern, leave the app, kill it from the
+switcher, open it, and see the change. Then the same after waiting over a
+minute and killing it without leaving first. Then with a key held while
+leaving.
+
+Not covered:
+
+- [O] The firmware's own save and load (projects, patterns to the +Drive).
+  `emu/esdhc.py` is not in the native machine and its registers are plain
+  memory there, so what the firmware does when asked is not known: it was
+  not tried. If the firmware waits for the card for ever, the machine does
+  not stop, and the next save keeps it that way: `cycles.save.prev` is the
+  one before, and deleting both starts over.
+- A kept machine is for the build that made it: the same firmware image and
+  the same clock (`cfcore_open` refuses another `ips`). A change to a
+  model's fields changes the format; there is one version and no migration.
+- No control in the app to go back to the bundled state.
+- Each save writes about 45 MB.
+
+## The panel: a way to press a knob, its LEDs, and the artwork (2026-10-08)
+
+From Aileen playing it on both devices. The artwork and the desktop side
+were made and run here; the Swift is **written and not built**.
+
+- **Pressing a knob.** A finger cannot press and turn. The app has a key of
+  its own, PUSH, between PATTERN and TRACK: while it is held a knob touched
+  is a knob pressed (key 32, the one push switch, down for as long as the
+  knob is touched), so a touch is a click and a drag is a press and turn.
+  The tap on PITCH that pushed it is gone. PUSH's cap is in both Models'
+  key atlases (`tools/render_models.py`); the desktop window does not use
+  it.
+- **The knob LEDs.** Each of the twelve parameter knobs has a lens beside
+  it, lit while a step is held for every parameter locked on that step.
+  They are entries 35 to 46 of the firmware's LED table (0x4010abfc), in
+  the knobs' order, and each was seen to light: in grid recording with the
+  pattern playing, hold step 3 and turn the knob (`cfpoke`). Entries 31 to
+  34 are the four page lights, 52, 48, 49, 50 for 1:4 to 4:4, seen by
+  stepping through the pages. Both are in `devices/model-cycles.toml`
+  (`page_leds`, `[panel.knob_leds]`), drawn dark on the plate, and lit by
+  the desktop window and the app.
+- [O] The lock does not always take here. Holding step 3 for 0.3, 0.8 or
+  1.5 s and turning PITCH 1, 5 or 12 steps, playing and stopped, PITCH's
+  LED lit in 6 of 18 tries, with no pattern in which. When it does not, the
+  screen shows the new value plain and not inverted: the turn went to the
+  track, as if no step were held. Whether the device does the same, or the
+  panel model's held key or its turns are at fault, is not known.
+- The Model:Samples' device file has the same ids, **not checked**: its
+  table was not read.
+- **Icons.** MACHINE, PUNCH and GATE are drawn after the pictograms on the
+  device's keys, as Aileen describes them from the unit (a drum with its
+  tension lines, a file folder, an envelope); LFO is a sine. The Samples' LOOP is a circular arrow,
+  not from a photo. **Step keys**: the frame on steps 1, 5, 9
+  and 13 no longer touches the underline.
+- `cfpoke` (new) works a machine's panel from the command line and prints
+  its LEDs and screen.
+
+To check on a device: hold PUSH and touch LEVEL/DATA in a menu (a click);
+hold PUSH and drag a knob; in grid recording hold a step, turn a knob, and
+see its lens light; the page lights while a long pattern plays.
 
 ## What the Python side did per second (the scope that was ported)
 
@@ -649,8 +762,9 @@ Unicorn library already, so not in the counts: the block budget, the
 software eDMA transfers, FF1 and `rte`.
 
 Next (the gate is passed: 5.8x on the phone, 3.4x on the iPad, above):
-what a session needs beyond playing (saving, the +Drive, starting without
-a Python-made state).
+what a session needs beyond playing. Keeping the machine between launches
+is above (the app side to be built and tried on a device); then the
++Drive, and starting without a Python-made state.
 
 ## What can be reused
 

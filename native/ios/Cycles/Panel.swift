@@ -2,15 +2,21 @@
 // in the same 1380 x 884 space, over the same drawn faceplate
 // (emu/assets/panels/model-cycles), and the wiring from
 // devices/model-cycles.toml (which scan column and bit each key is, which
-// ADC channel each pad, which LED each key lights).
+// ADC channel each pad, which LED each key lights, which the lens beside
+// each parameter knob and the four page lights).
+//
+// One key is the app's own: PUSH, between PATTERN and TRACK. A finger
+// cannot press a knob and turn it, so while PUSH is held a knob touched is
+// a knob pressed: touch it for a click, drag it for a press and turn.
 import SwiftUI
 import UIKit
 
 enum ControlKind {
     case key(column: Int32, bit: Int32)
     case pad(channel: Int32)
-    /// A knob, and its push switch if it has one.
-    case knob(encoder: Int32, push: (column: Int32, bit: Int32)?)
+    case knob(encoder: Int32)
+    /// The app's PUSH key: not a key of the machine's.
+    case push
 }
 
 struct Control: Identifiable {
@@ -19,7 +25,8 @@ struct Control: Identifiable {
     let kind: ControlKind
     /// A key's or pad's rectangle; a knob's bounding square.
     let rect: CGRect
-    /// The LED this key lights, if any (row * 8 + bit).
+    /// The LED this key lights, or the one beside this knob, if any
+    /// (row * 8 + bit).
     var led: Int? = nil
 
     var isKnob: Bool {
@@ -51,6 +58,28 @@ enum Panel {
         23: (2, 5), 24: (2, 6), 25: (2, 7), 26: (3, 0), 27: (3, 1), 28: (3, 2), 29: (3, 3),
         30: (3, 4), 31: (3, 5), 32: (3, 7),
     ]
+    /// The knobs' push switch: key 32, which the device file has under
+    /// PITCH.
+    static let pushSwitch: (column: Int32, bit: Int32) = (3, 7)
+    static let pushKey = 200
+    /// [panel] page_leds: the lights above PAGE, 1:4 to 4:4, placed as
+    /// emu/panellayout.py's page_lights places them.
+    static let pageLights: [(led: Int, at: CGPoint)] = [52, 48, 49, 50].enumerated().map {
+        (led: $1, at: CGPoint(x: 1236 + 43 + (CGFloat($0) - 1.5) * 18, y: 658 - 30))
+    }
+    /// [panel.knob_leds], by the knob's name: the lens beside each
+    /// parameter knob, lit while a step is held for each parameter locked
+    /// on it.
+    private static let knobLed: [String: Int] = [
+        "PITCH": 26, "DECAY": 34, "COLOR": 32, "SHAPE": 41, "SWEEP": 27, "CONTOUR": 24,
+        "DELAY SEND": 33, "REVERB SEND": 42, "LFO SPEED": 15, "VOL+DIST": 25, "SWING": 35,
+        "CHANCE": 43,
+    ]
+    /// emu/panellayout.py's knob_light: where that lens is.
+    static func knobLight(_ knob: CGRect) -> CGPoint {
+        CGPoint(x: knob.minX - 16, y: knob.minY + 10)
+    }
+
     /// Key code -> name ([panel.labels]); the trigs are 16 to 31.
     private static let keyCode: [String: Int] = [
         "FUNCTION": 1, "TRACK": 2, "PATTERN": 3, "RETRIG": 4, "MACHINE": 5, "PUNCH": 6,
@@ -83,12 +112,9 @@ enum Panel {
         }
         func knob(_ label: String, _ x: CGFloat, _ y: CGFloat, _ r: CGFloat) {
             let code = encoderCode[label]!
-            // PITCH pushes: its switch is key 32.
-            let push = label == "PITCH" ? wire[32] : nil
             out.append(Control(
-                id: 100 + code, label: label,
-                kind: .knob(encoder: Int32(code - 1), push: push.map { (column: $0.0, bit: $0.1) }),
-                rect: CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r)))
+                id: 100 + code, label: label, kind: .knob(encoder: Int32(code - 1)),
+                rect: CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r), led: knobLed[label]))
         }
         for (i, label) in ["BACK", "SETTINGS", "TEMPO"].enumerated() {
             key(label, keyCode[label]!, 64 + CGFloat(i) * 178, 362, 58, 48)
@@ -100,6 +126,8 @@ enum Panel {
         key("RETRIG", 4, 392, 554, 86, 48)
         key("PATTERN", 3, 64, 658, 86, 48)
         key("TRACK", 2, 392, 658, 86, 48)
+        out.append(Control(
+            id: pushKey, label: "PUSH", kind: .push, rect: CGRect(x: 228, y: 658, width: 86, height: 48)))
         key("PAGE", 15, 1236, 658, 86, 48)
         for (i, label) in ["MACHINE", "PUNCH", "GATE", "LFO"].enumerated() {
             key(label, keyCode[label]!, 568, 128 + CGFloat(i) * 132, 56, 48)

@@ -731,6 +731,17 @@ class DigitaktPanel(tk.Tk):
                                 fill='#242316', outline='')
             self.page_items.append((led, dot))
             self.layout.append({'k': 'd', 'led': led, 'x': cx, 'y': cy})
+        # The lens beside each of a Model's parameter knobs.
+        code_label = {code: label for label, code in self.enc_codes.items()}
+        for led, code in sorted((getattr(dev, 'knob_leds', None) or {}).items()):
+            spec = self.ENCODERS.get(code_label.get(code))
+            if spec is None:
+                continue
+            cx, cy = panellayout.knob_light(*spec)
+            dot = c.create_rectangle(cx - 4.5, cy - 4.5, cx + 4.5, cy + 4.5,
+                                     fill='#242316', outline='')
+            self.page_items.append((led, dot))
+            self.layout.append({'k': 'd', 'led': led, 'x': cx, 'y': cy})
         self._led_version = -1
         for label, code in self.enc_codes.items():
             spec = self.ENCODERS.get(label)

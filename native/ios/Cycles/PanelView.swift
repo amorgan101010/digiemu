@@ -1,5 +1,6 @@
 // Draws the panel and takes its touches. Every finger is its own control:
-// hold FUNCTION or a trig with one and turn a knob with another.
+// hold FUNCTION or a trig with one and turn a knob with another. A knob is
+// pressed by touching it while PUSH is held (Panel.swift).
 import SwiftUI
 import UIKit
 
@@ -48,11 +49,24 @@ struct PanelView: View {
                 Text(engine.status).font(.system(size: 14)).foregroundColor(Panel.amber),
                 in: Panel.screen.insetBy(dx: 14, dy: 14))
         }
+        // The page lights: the plate has them dark.
+        for light in Panel.pageLights where engine.leds >> UInt64(light.led) & 1 != 0 {
+            drawLens(&context, at: light.at, side: 8)
+        }
         for control in Panel.controls {
             let pressed = touches.held.contains(control.id)
             if control.isKnob {
                 drawKnob(&context, control, pressed)
+                if let led = control.led, engine.leds >> UInt64(led) & 1 != 0 {
+                    drawLens(&context, at: Panel.knobLight(control.rect), side: 9)
+                }
                 continue
+            }
+            if control.id == Panel.pushKey {
+                // The app's own key: its legend is not on the plate.
+                context.draw(
+                    Text("HOLD + KNOB TO PRESS").font(.system(size: 9)).foregroundColor(Color(hex: 0x50584f)),
+                    at: CGPoint(x: control.rect.midX, y: control.rect.maxY + 14))
             }
             // The cap, up or down, then its light: the LED's colour, or the
             // legend colour while it is held dark (emu/dtpanel.py's _paint).
@@ -68,6 +82,14 @@ struct PanelView: View {
                 layer.draw(Image(decorative: masks[pressed ? 1 : 0], scale: 1), in: tile)
             }
         }
+    }
+
+    /// A lit LED lens, with a little of its light on the plate around it.
+    private func drawLens(_ context: inout GraphicsContext, at centre: CGPoint, side: CGFloat) {
+        let lens = CGRect(x: centre.x - side / 2, y: centre.y - side / 2, width: side, height: side)
+        context.fill(
+            Path(roundedRect: lens.insetBy(dx: -3, dy: -3), cornerRadius: 4), with: .color(Panel.lit.opacity(0.3)))
+        context.fill(Path(roundedRect: lens, cornerRadius: 1.5), with: .color(Panel.lit))
     }
 
     private func drawKnob(_ context: inout GraphicsContext, _ control: Control, _ pressed: Bool) {
@@ -132,10 +154,10 @@ final class TouchView: UIView {
 
     private struct Finger {
         let control: Control
-        let first: CGPoint
         var last: CGPoint
         var carry: CGFloat = 0
-        var dragged = false
+        /// On a knob: it is pressed as well, for as long as it is touched.
+        var pushing = false
     }
     private var fingers: [UITouch: Finger] = [:]
     /// Points of drag for one detent: emu/dtpanel.py's six pixels.
@@ -154,7 +176,7 @@ final class TouchView: UIView {
             guard let control = Panel.control(at: point),
                 !fingers.values.contains(where: { $0.control.id == control.id })
             else { continue }
-            fingers[touch] = Finger(control: control, first: touch.location(in: self), last: touch.location(in: self))
+            fingers[touch] = Finger(control: control, last: touch.location(in: self))
             state?.held.insert(control.id)
             switch control.kind {
             case let .key(column, bit):
@@ -165,19 +187,31 @@ final class TouchView: UIView {
                 let depth = min(1, max(0, (point.y - Panel.padTop) / Panel.padHeight))
                 engine?.send(.pad(index: channel, velocity: Int32((127 - depth * 97).rounded())))
             case .knob:
-                break
+                // With PUSH held, touching a knob presses it.
+                if state?.held.contains(Panel.pushKey) == true { push(touch) }
+            case .push:
+                // ... and so does PUSH coming down on knobs already touched.
+                for (other, finger) in fingers where finger.control.isKnob { push(other) }
             }
         }
     }
 
+    /// Press the knob under this finger. The machine has one push switch,
+    /// so it goes down with the first knob pressed and up with the last.
+    private func push(_ touch: UITouch) {
+        guard var finger = fingers[touch], !finger.pushing else { return }
+        if !fingers.values.contains(where: \.pushing) {
+            engine?.send(.key(column: Panel.pushSwitch.column, bit: Panel.pushSwitch.bit, down: true))
+        }
+        finger.pushing = true
+        fingers[touch] = finger
+    }
+
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
-            guard var finger = fingers[touch], case let .knob(encoder, _) = finger.control.kind else { continue }
+            guard var finger = fingers[touch], case let .knob(encoder) = finger.control.kind else { continue }
             // Up or right is clockwise.
             let now = touch.location(in: self)
-            if abs(now.x - finger.first.x) > 4 || abs(now.y - finger.first.y) > 4 {
-                finger.dragged = true
-            }
             finger.carry += ((now.x - finger.last.x) - (now.y - finger.last.y)) / detent
             finger.last = now
             let steps = Int(finger.carry)
@@ -199,14 +233,14 @@ final class TouchView: UIView {
                 engine?.send(.key(column: column, bit: bit, down: false))
             case let .pad(channel):
                 engine?.send(.pad(index: channel, velocity: 0))
-            case let .knob(_, push):
-                // A tap pushes a knob; a drag turns it (emu/dtpanel.py).
-                // The panel holds the press for as long as the firmware
-                // needs, so both halves can go at once.
-                if let push, !finger.dragged {
-                    engine?.send(.key(column: push.column, bit: push.bit, down: true))
-                    engine?.send(.key(column: push.column, bit: push.bit, down: false))
+            case .knob:
+                // The last pressed knob let go lets the switch up, whether
+                // or not PUSH is still held.
+                if finger.pushing, !fingers.values.contains(where: \.pushing) {
+                    engine?.send(.key(column: Panel.pushSwitch.column, bit: Panel.pushSwitch.bit, down: false))
                 }
+            case .push:
+                break
             }
         }
     }

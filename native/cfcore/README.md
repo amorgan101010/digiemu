@@ -146,6 +146,27 @@ the screen and the LEDs. Build and install it the same way
 (`-scheme Cycles`, `Cycles.app`, `io.github.amorgan101010.cycles`).
 `cfscreen RUN.start 401492f0` prints the screen it reads, on the Mac.
 
+The app keeps the machine between launches: `src/state.rs` writes the whole
+of it (`Machine::save`, `cfcore_save`) to a file that opens in place of a
+starting state. To check that a restored machine carries on as one never
+stopped, compare the last hash each of these prints:
+
+```sh
+target/release/cfsave RUN.start --ips 211700000 --run 1.3 --run 4
+target/release/cfsave RUN.start --ips 211700000 --run 1.3 --out /tmp/a.save
+target/release/cfsave /tmp/a.save --ips 211700000 --run 4
+```
+
+A saved machine holds guest memory: keep it out of the tree.
+
+`cfpoke` works a machine's panel from the command line, for finding out
+what a key, a knob or an LED is: press and turn, then print the LEDs lit or
+the screen.
+
+```sh
+target/release/cfpoke RUN.start --ips 211700000 key 1 1 1 run 0.1 key 1 1 0 run 0.3 leds screen 401492f0
+```
+
 What the first builds ran into (M1 MacBook Air, 8 GB, Xcode 27.0):
 
 - `xcodegen generate` writes the project again, without the team chosen in
