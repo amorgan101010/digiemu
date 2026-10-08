@@ -613,6 +613,11 @@ input dropped, and keeps nothing when it closes.
   app takes while playing.
 - Not there: saving, the +Drive, MIDI, background audio, starting from
   power-on, and a layout for the phone (it is the window's, scaled down).
+- Where it differs from the window: every knob shows its pointer from the
+  start (the window shows one once a knob has turned), dark on the three
+  pale knobs; PITCH cannot be held down while it turns; the four page
+  lights by DELAY TIME are the plate's dark ones (the device file names no
+  LEDs for them, so the window does not light them either).
 
 ## What the Python side did per second (the scope that was ported)
 

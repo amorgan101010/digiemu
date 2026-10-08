@@ -146,6 +146,24 @@ the screen and the LEDs. Build and install it the same way
 (`-scheme Cycles`, `Cycles.app`, `io.github.amorgan101010.cycles`).
 `cfscreen RUN.start 401492f0` prints the screen it reads, on the Mac.
 
+What the first builds ran into (M1 MacBook Air, 8 GB, Xcode 27.0):
+
+- `xcodegen generate` writes the project again, without the team chosen in
+  Xcode: give `DEVELOPMENT_TEAM` on the command line every time.
+- A device new to the team is not in the provisioning profile. Build once
+  with `-destination id=UDID -allowProvisioningDeviceRegistration` to add
+  it, or the install is refused.
+- `devicectl device process launch --console` does not return while the
+  app runs. Launch without it and copy `cfbench.log` off instead.
+- CyclesBench only runs in the foreground: launching another app over it
+  suspends it mid-run.
+- With the blocks, the Mac tools take 5.5 to 7.5 minutes to build and the
+  iOS library about 4. `build.sh` uses a target directory of its own so
+  one does not wait on the other; they were not run at the same time.
+- The emulator thread is given a 16 MB stack in both apps (a secondary
+  thread's default is 512 KB, and the translated blocks are one large
+  function). The default was not tried.
+
 They need xcodegen, a team chosen once in Xcode, Developer Mode on the
 device, and the developer trusted there after the first install. Both apps
 bundle the starting state and the translated blocks, so they are
