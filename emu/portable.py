@@ -1715,10 +1715,10 @@ def _marked_incompatible(state, snap):
 
 
 def _run_panel(paths, b, snap, log, module='emu.dtpanel'):
-    """Run the device's panel (`module`, from PANELS: emu.dtpanel or
-    emu.dnpanel, which share main()'s arguments and codes) on `snap`, then
-    record in firmware.json what the session left behind. -> (the panel's
-    return code, incompatible?).
+    """Run the device's panel (`module`, from PANELS: emu.dtpanel,
+    emu.dnpanel or emu.mdpanel, which share main()'s arguments and codes) on
+    `snap`, then record in firmware.json what the session left behind.
+    -> (the panel's return code, incompatible?).
 
     'resume' is the card stamp resume.snap was saved against:
       - a clean exit that wrote resume.snap: the card as it is now;
