@@ -738,6 +738,68 @@ To check on a device: tap PUSH in a menu (a click); hold PUSH and drag
 LEVEL/DATA; in grid recording hold a step, turn a knob, and
 see its lens light; the page lights while a long pattern plays.
 
+## On the iPad: SETTINGS, PUSH and the knob lights (2026-10-08, Mac)
+
+The build with saving, PUSH and the knob lights (37a1e0f) compiled as
+written, with no errors or warnings, and runs on the iPad. Aileen's report
+from playing it there:
+
+- the gear key (SETTINGS) is very hard to press: "the screen pops up for a
+  sec then goes back to normal";
+- PUSH "isn't working consistently; it's like it turns the knob while it
+  clicks";
+- the lights beside the knobs "aren't doing anything".
+
+**SETTINGS is reproduced on the Mac, in the machine, not the touch code.**
+With `cfpoke` on `cycles-play.start` (a build without the translated
+blocks; the screen is hashed, 100eda... being the main screen):
+
+```sh
+cfpoke cycles-play.start --ips 211700000 run PRE key 0 6 1 run HOLD key 0 6 0 run 0.25 screen 401492f0 | md5
+```
+
+- **Playing**, taps of 0.02 to 0.8 s at three start times: the menu opened
+  in 1 of 24. Sampling the screen every 5 ms through two failing taps
+  shows no frame of the menu at all, so the press is ignored, not opened
+  and closed.
+- **Stopped** (STOP tapped first, 0.6 s to settle), the menu opens only
+  when the key is *released* in a window about 40 ms wide that repeats
+  every 100 ms. Press time and hold length do not matter, only when the
+  release falls:
+
+  | Press at | Holds of 0.02 to 0.20 s in steps of 0.02 (O opened) |
+  | --- | --- |
+  | 0.00 | `OO...OO...` |
+  | 0.02 | `O...OO...O` |
+  | 0.04 | `...OO...OO` |
+  | 0.06 | `..OO...OO.` |
+  | 0.08 | `.OO...OO..` |
+
+- Playing, a sweep of the press time from 0.20 to 0.98 s in steps of
+  0.02 (hold 0.1) opened it once, at 0.52: the windows are much rarer.
+- Held for about 1.07 s the screen changes to another (hash de4cdb...)
+  and goes back on release. That is probably the "pops up for a sec".
+- Other keys, twelve taps each over the same timings: TEMPO 12 of 12,
+  PATTERN 12 of 12, SETTINGS 1 of 12. In grid recording, a tap on step 3
+  toggled it 30 of 30. So it is not key releases in general.
+- It is not the idle reschedule: with `Idle.every` forced from 256,024 to
+  2,000 and to 200 the same taps open and fail.
+- [O] What has a 100 ms period while stopped and gates the release. Not
+  looked at in the firmware. One guess, not tested: the menu waits on, or
+  is refused by, something that polls the +Drive, which the native machine
+  does not have. [O] Whether the Python emulator does the same.
+
+**PUSH** is not reproduced: a PUSH tap on the main screen changes nothing
+there (20 of 20 the same), and it was not tried inside a menu. It also
+acts on release (MODELS.md: the key callback asks whether the knob turned
+while it was held), so it may be the same thing as SETTINGS. [O]
+
+**The knob lights** do light in this build on the Mac: in grid recording,
+step 3 held and DECAY turned 15 paced steps, LED 34 is lit while the step
+is held and dark once it is let go. The app draws the lens where the plate
+has it. [O] What Aileen did when they stayed dark, and whether they were
+expected at another time.
+
 ## What the Python side did per second (the scope that was ported)
 
 Counted before the port, for the playing Cycles, per emulated second at
