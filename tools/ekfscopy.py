@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Copy one +Drive's samples onto another, folder for folder.
 
-    python tools/ekfscopy.py FROM TO [--rate 48000] [--dry]
+    python tools/ekfscopy.py FROM TO [--rate 48000] [--dry] [--base N]
 
 FROM and TO are raw card images with an ekFS volume (emu/ekfsformat.py).
 Every directory and sample below FROM's root is made under TO's root, except
 what TO already has by that name. With --rate, a sample stored at another
 rate is resampled to it: the Digitakt plays a sample at whatever rate its
 header gives, but a firmware that asks for 48 kHz turns the others away, and
-emu/samples.py stores a WAV at its own rate.
+emu/samples.py stores a WAV at its own rate. Resampling needs numpy and
+scipy, which nothing else here does:
+
+    uv run --with numpy --with scipy python tools/ekfscopy.py FROM TO --rate 48000
 
 Write to TO only while no emulator has it open, and rebuild its snapshots
 afterwards: the firmware indexes the card at its cold boot.
@@ -44,8 +47,12 @@ def resampled(data, rate):
     was = was or 48000
     if was == rate or pcm_len < 4:
         return data
-    import numpy as np
-    from scipy.signal import resample_poly
+    try:
+        import numpy as np
+        from scipy.signal import resample_poly
+    except ImportError as exc:
+        raise SystemExit('--rate needs numpy and scipy (%s): run with '
+                         'uv run --with numpy --with scipy' % exc)
     from math import gcd
     pcm = np.frombuffer(data, dtype='>i2', count=pcm_len // 2,
                         offset=ek.SAMPLE_HEADER).astype(np.float64)
@@ -93,6 +100,20 @@ def copy_tree(src, dst, sdir, ddir, path, rate, dry, tally):
                   flush=True)
 
 
+def copy(src_path, dst_path, rate=0, dry=False, base=ek.REGION):
+    """Copy the tree. -> counts: dirs, files, kept (already there),
+    resampled, bytes."""
+    src = ek.Ekfs(src_path, base)
+    dst = ek.Ekfs(dst_path, base, write=not dry)
+    tally = dict(dirs=0, files=0, kept=0, resampled=0, bytes=0)
+    try:
+        copy_tree(src, dst, ek.ROOT_INODE, ek.ROOT_INODE, '', rate, dry, tally)
+    finally:
+        dst.close()
+        src.close()
+    return tally
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('src')
@@ -101,13 +122,10 @@ def main():
                     help='resample samples stored at another rate to this')
     ap.add_argument('--dry', action='store_true',
                     help='read and convert, write nothing')
+    ap.add_argument('--base', type=lambda s: int(s, 0), default=ek.REGION,
+                    help='sector the volume starts at, in both images')
     args = ap.parse_args()
-    src = ek.Ekfs(args.src)
-    dst = ek.Ekfs(args.dst, write=not args.dry)
-    tally = dict(dirs=0, files=0, kept=0, resampled=0, bytes=0)
-    copy_tree(src, dst, ek.ROOT_INODE, ek.ROOT_INODE, '', args.rate, args.dry,
-              tally)
-    dst.close()
+    tally = copy(args.src, args.dst, args.rate, args.dry, args.base)
     print('%(dirs)d folders, %(files)d files copied (%(resampled)d resampled), '
           '%(kept)d already there' % tally)
     print('%d MB of samples' % (tally['bytes'] >> 20))

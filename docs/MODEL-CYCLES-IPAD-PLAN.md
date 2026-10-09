@@ -1072,9 +1072,13 @@ The modification adds a Sample machine. Whether it plays samples from the
   | SWEEP | 6559 | a tone, strongest at 180 Hz, flatness 0.02 |
   | TONE440 | 6560 | a tone, strongest at 310 Hz, flatness 0.01 |
 
-  [O] The tone is at 310 Hz, not the file's 440: 0.705 of it, six
-  semitones down. Not explained: the machine's own tuning on this track,
-  or the rate the loader stores, were not looked at. The outputs do not
+  **[C]** The tone at 310 Hz, six semitones under the file's 440, is the
+  factory project, not the loader or the file. Measured again over 0.3 s
+  with a finer transform: 311.1 Hz on track 1 of the factory project
+  (440 x 2^(-6/12) is 311.13), and 439.8 Hz with the same file loaded the
+  same way on track 1 of a NEW project. The PITCH knob reads 0.0 in
+  both. [O] Which setting of the factory project's track 1 holds the six
+  semitones (its note, most likely) was not found. The outputs do not
   correlate with the files sample for sample (at most 0.18), which the
   machine's envelope, filter and pitch would account for; that was not
   taken apart either.
@@ -1139,7 +1143,7 @@ On the build with the translated blocks, from the files staged for the
 Mac: the same load, the same levels before and after a save, and 1 s +
 1 s through a save gives the unbroken 2 s run's machine.
 
-[O] On a device, where the app would be about 640 MB. [O] The six-semitone question above. [O] Whether a
+[O] On a device, where the app would be about 640 MB. [O] Whether a
 loaded sample is in tune and whole was not checked beyond its level.
 [O] Erase over the card file is written, not run.
 
