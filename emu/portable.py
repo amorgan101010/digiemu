@@ -433,15 +433,17 @@ def _fwcheck():
 
 
 def _panel_module(name='emu.dtpanel'):
-    """-> the panel module PANELS names (emu.dtpanel, emu.dnpanel), looked
-    up in sys.modules first like the others. The imports are spelled out,
-    not importlib'd, so the packaging scan (tests/test_packaging.py) sees
-    both and the bundle carries them."""
+    """-> the panel module PANELS names (emu.dtpanel, emu.dnpanel,
+    emu.mdpanel), looked up in sys.modules first like the others. The
+    imports are spelled out, not importlib'd, so the packaging scan
+    (tests/test_packaging.py) sees all three and the bundle carries them."""
     mod = sys.modules.get(name)
     if mod is not None:
         return mod
     if name == 'emu.dnpanel':
         from emu import dnpanel as mod
+    elif name == 'emu.mdpanel':
+        from emu import mdpanel as mod
     elif name == 'emu.dtpanel':
         from emu import dtpanel as mod
     else:

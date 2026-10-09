@@ -1223,6 +1223,14 @@ class PanelTest(Base):
                                      '--save-on-exit', paths.resume, '--app']])
         self.assertEqual(portable.PANELS['dn1'], 'emu.dnpanel')
 
+    def test_every_panel_module_named_can_be_loaded(self):
+        """_panel_module spells its imports out, so it has to know every
+        module PANELS names: the other tests stand a module in for each, and
+        never reach the import."""
+        for short, name in sorted(portable.PANELS.items()):
+            with self.subTest(short):
+                self.assertEqual(portable._panel_module(name).__name__, name)
+
     def test_a_second_panel_on_the_same_folder_is_busy(self):
         paths = self.make_folder()
         with portable.FolderLock(paths.root, 'panel').acquire(), \
