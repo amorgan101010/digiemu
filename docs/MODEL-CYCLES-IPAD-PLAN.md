@@ -1143,6 +1143,17 @@ On the build with the translated blocks, from the files staged for the
 Mac: the same load, the same levels before and after a save, and 1 s +
 1 s through a save gives the unbroken 2 s run's machine.
 
+**The 48 kHz rule is the modified firmware's, not the Model:Samples'.**
+Stock Model:Samples OS 1.13, run the same way (its recording replays
+identically here, interpreter only; its `sd_flag` is 0x40daccdc and its
+displayed-frame pointer 0x40145540): WAVE alone opens the browser, and
+LEVEL/DATA's push assigns the sample to the track with no message. A
+440 Hz tone stored at 44.1 kHz and the same tone stored at 48 kHz, each
+assigned to track 1, both play at 440.0 Hz; the track is silent with
+nothing assigned. So stock plays a sample at the rate its header gives,
+as the Digitakt does, and "Not 48kHz mono" and the FUNCTION + MACHINE
+browser belong to the modification.
+
 [O] On a device, where the app would be about 640 MB. [O] Whether a
 loaded sample is in tune and whole was not checked beyond its level.
 [O] Erase over the card file is written, not run.
