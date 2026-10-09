@@ -156,6 +156,24 @@ enum Panel {
         return out
     }()
 
+    /// Which of the sixteen step keys `control` is, 0 to 15: their key
+    /// codes are 16 to 31.
+    static func step(of control: Control) -> Int? {
+        if case .key = control.kind, (16...31).contains(control.id) { return control.id - 16 }
+        return nil
+    }
+
+    static func stepKey(_ step: Int) -> Control? {
+        controls.first { $0.id == 16 + step }
+    }
+
+    /// The step key `point` is over. Its drawn rectangle, not the wider
+    /// one a first touch gets: a finger holding a step for a lock must not
+    /// slip onto its neighbour.
+    static func stepKey(at point: CGPoint) -> Control? {
+        controls.first { step(of: $0) != nil && $0.rect.contains(point) }
+    }
+
     /// The control a touch at `point` (in mdpanel's space) is on: keys and
     /// pads by their rectangles, a little generous, then the nearest knob.
     static func control(at point: CGPoint) -> Control? {

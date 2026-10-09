@@ -462,6 +462,11 @@ fn dec(f: &mut Fetch, op: u16, pc: u32) -> Option<Insn> {
                 _ => return None,
             }
         }
+        // CPUSHL dc/ic/bc,(An): push and invalidate a cache line. There is
+        // no cache here, so it does nothing (the reference engine also
+        // generates no code for it). The firmware runs a loop of them on
+        // FUNCTION + MACHINE.
+        0xf if op & 0xff38 == 0xf428 => Nop(),
         _ => return None,
     })
 }

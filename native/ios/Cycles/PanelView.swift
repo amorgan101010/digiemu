@@ -1,6 +1,7 @@
 // Draws the panel and takes its touches. Every finger is its own control:
 // hold FUNCTION or a trig with one and turn a knob with another. A knob is
-// pressed by touching it while PUSH is held (Panel.swift).
+// pressed by touching it while PUSH is held (Panel.swift). A finger slid
+// along the step keys presses each one it reaches.
 import SwiftUI
 import UIKit
 
@@ -153,7 +154,7 @@ final class TouchView: UIView {
     var scale: CGFloat = 1
 
     private struct Finger {
-        let control: Control
+        var control: Control
         var last: CGPoint
         var carry: CGFloat = 0
     }
@@ -190,8 +191,41 @@ final class TouchView: UIView {
         }
     }
 
+    /// A finger that went down on a step key and has slid onto another:
+    /// let the first go and press each step it crossed, ending with the one
+    /// it is on held, so one sweep along the row puts down a run of steps.
+    private func sweep(_ touch: UITouch, _ finger: Finger) {
+        guard let from = Panel.step(of: finger.control),
+            let onto = Panel.stepKey(at: panelPoint(touch)), let to = Panel.step(of: onto), to != from,
+            !fingers.values.contains(where: { $0.control.id == onto.id })
+        else { return }
+        if case let .key(column, bit) = finger.control.kind {
+            engine?.send(.key(column: column, bit: bit, down: false))
+        }
+        state?.held.remove(finger.control.id)
+        // A fast sweep can pass a key between two touch reports.
+        for step in stride(from: from, to: to, by: to > from ? 1 : -1).dropFirst() {
+            guard let key = Panel.stepKey(step), case let .key(column, bit) = key.kind,
+                !fingers.values.contains(where: { $0.control.id == key.id })
+            else { continue }
+            engine?.send(.key(column: column, bit: bit, down: true))
+            engine?.send(.key(column: column, bit: bit, down: false))
+        }
+        if case let .key(column, bit) = onto.kind {
+            engine?.send(.key(column: column, bit: bit, down: true))
+        }
+        state?.held.insert(onto.id)
+        var moved = finger
+        moved.control = onto
+        fingers[touch] = moved
+    }
+
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
+            if let finger = fingers[touch], Panel.step(of: finger.control) != nil {
+                sweep(touch, finger)
+                continue
+            }
             guard var finger = fingers[touch], case let .knob(encoder) = finger.control.kind else { continue }
             // Up or right is clockwise.
             let now = touch.location(in: self)

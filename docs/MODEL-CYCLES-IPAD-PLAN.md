@@ -982,6 +982,58 @@ SYBit and SYSwm, which stock does not have.
 [O] The added machines were listed, not played; sample preview and the
 boot animation were not tried. [O] Not built for or run on a device.
 
+## On the iPad with the modified firmware (2026-10-09, Mac)
+
+17cb001 with the for-mac `aot_gen.rs` (4,456 blocks) and
+`cycles-play.start` built as written and runs on the iPad: the blocks'
+firmware check passed there, since the app opened the bundled state. The
+stock files are kept on the Mac as `aot_gen-stock.rs` and
+`cycles-play-stock.start`. Aileen played it; not measured (CyclesBench is
+installed with the same firmware and was not run).
+
+- **[C] FUNCTION + MACHINE stopped the machine**: "unimplemented
+  instruction at 0x4008b2d8", on the iPad and with `cfpoke` on the Mac,
+  on the stock state too. The instruction is `f468`, CPUSHL dc,(A0), in a
+  loop over cache lines. `src/insn.rs` now decodes CPUSHL
+  (`op & 0xff38 == 0xf428`) as a no-op: there is no cache. With it the
+  same keys open the preset browser (FUNCTION held, MACHINE tapped,
+  playing: the screen shows the Pool list at 001/003). Checked on the
+  interpreter only; no translated block has one. [O] `cfreplay` was not
+  run again. [O] That the reference engine also does nothing for it is
+  from memory of QEMU's m68k translator, not checked against the patched
+  Unicorn. Not yet on the iPad.
+- **A sweep along the step keys** (`PanelView.swift`, `Panel.swift`), at
+  Aileen's request: a finger that went down on a step key and slides onto
+  another lets the first go and presses the one it is on, and any it
+  passed between two touch reports, so one gesture puts down a run of
+  steps. It moves on only inside the next key's drawn rectangle, so a
+  finger holding a step for a lock does not slip. With `cfpoke`, in grid
+  recording on a track with all sixteen steps set, the same key sequence
+  (each key let go as the next goes down) clears all sixteen at 30 ms,
+  12 ms and 0 ms a key, and a slide from 5 to 6 clears those two. On the
+  iPad it is installed; Aileen has not reported on it.
+- **A build installed from the Mac loses what was not saved.**
+  `devicectl device install app` and `launch --terminate-existing` kill
+  the app without sending it to the background, and the app saves only on
+  going to the background and a minute after the last touch. After seven
+  minutes of playing, Documents held `cycles.save.bad` and
+  `cycles.save.prev` (both from the stock machine, set aside at the first
+  launch) and no `cycles.save`: nothing had been written. The firmware's
+  own project save is on the card, which is inside that file, so it goes
+  the same way. An install does keep Documents. For now: Home before an
+  install. Aileen's decision (2026-10-09): leave the saving as it is, no
+  periodic save.
+- **Aileen wants a boot, not a kept state**: "it is kind of annoying that
+  the device starts on a saved state instead of from a clean boot", and
+  the firmware saves its own work to the +Drive anyway. Today the app
+  cannot boot (no power-on path in the native machine), and what the
+  firmware writes to the card is only read back at boot, so the kept
+  machine is the one thing that carries work across launches. Where this
+  points: every launch a boot, the card kept between launches as a file
+  of its own, the kept machine gone. That is "starting without a
+  Python-made state" below, and it would also make an install harmless.
+  [O] Not started.
+
 ## What the Python side did per second (the scope that was ported)
 
 Counted before the port, for the playing Cycles, per emulated second at
