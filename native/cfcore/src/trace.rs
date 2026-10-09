@@ -102,6 +102,8 @@ pub struct Trace {
     /// How many bytes of the file the starting state takes: everything
     /// before the items.
     pub head: usize,
+    /// The +Drive the machine starts with, if the file brings one.
+    pub card: Option<crate::esdhc::Esdhc>,
 }
 
 struct Reader<'a> {
@@ -307,6 +309,7 @@ impl Trace {
             raised: 0,
             last: Vec::new(),
             head: r.at,
+            card: None,
         };
         while r.at < data.len() {
             let item = match r.u8()? {
@@ -379,6 +382,16 @@ impl Trace {
                     }
                     continue;
                 }
+                30 => {
+                    let flag = r.u32()?;
+                    let mut card = crate::esdhc::Card { blocks: r.u32()?, ..Default::default() };
+                    for _ in 0..r.u32()? {
+                        let n = r.u32()?;
+                        card.write(n, r.bytes(crate::esdhc::SECTOR)?);
+                    }
+                    t.card = Some(crate::esdhc::Esdhc::for_driver(flag, card));
+                    continue;
+                }
                 tag => return Err(format!("unknown item {tag} at byte {}", r.at - 1)),
             };
             t.items.push(item);
@@ -418,14 +431,41 @@ impl Trace {
                 _ => {}
             }
         }
+        if let Some(e) = &self.card {
+            out.extend_from_slice(&card_item(e.status - 0x30, &e.card));
+        }
         out.push(11);
         out.extend_from_slice(&self.emulated_ns.to_le_bytes());
         out.extend_from_slice(&self.raised.to_le_bytes());
         out
     }
 
+    /// The big-endian word the starting memory has at `addr`.
+    pub fn word_at(&self, addr: u32) -> Option<u32> {
+        self.regions.iter().find_map(|r| {
+            let off = addr.checked_sub(r.addr)? as usize;
+            let b = r.data.get(off..off + 4)?;
+            Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        })
+    }
+
     pub fn read(path: &str) -> Result<Trace, String> {
         let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
         Trace::parse(&data).map_err(|e| format!("{path}: {e}"))
     }
+}
+
+/// The item that gives a machine its +Drive: the address of the card
+/// driver's "storage is up" flag, the card's size in sectors, then each
+/// sector that holds anything.
+pub fn card_item(flag: u32, card: &crate::esdhc::Card) -> Vec<u8> {
+    let mut out = vec![30];
+    out.extend_from_slice(&flag.to_le_bytes());
+    out.extend_from_slice(&card.blocks.to_le_bytes());
+    out.extend_from_slice(&(card.sectors.len() as u32).to_le_bytes());
+    for (n, data) in &card.sectors {
+        out.extend_from_slice(&n.to_le_bytes());
+        out.extend_from_slice(&data[..]);
+    }
+    out
 }

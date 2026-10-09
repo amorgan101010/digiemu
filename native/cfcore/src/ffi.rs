@@ -187,6 +187,16 @@ impl Bench {
         self.k.dev.borrow().panel.lit().iter().fold(0, |m, led| m | 1u64 << led)
     }
 
+    /// Write the whole machine to `path` (`Machine::save_to`).
+    pub fn save_to(&self, path: &str) -> Result<(), String> {
+        self.k.save_to(path)
+    }
+
+    /// The +Drive's model, if the machine has a card.
+    pub fn card(&self) -> Option<crate::esdhc::Esdhc> {
+        self.k.dev.borrow().esdhc.clone()
+    }
+
     /// The frame buffer the pointer at `pointer_at` names. -> false when it
     /// does not point into the firmware's memory.
     pub fn screen(&self, pointer_at: u32, out: &mut [u8; SCREEN_BYTES]) -> bool {

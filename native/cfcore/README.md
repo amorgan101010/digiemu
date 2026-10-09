@@ -113,7 +113,12 @@ target/release/cfrun RUN.trace --ips 211700000 [--seconds 120] [--wav DIR]
 `cfrun` takes only the starting state and the panel input from the
 recording. `target/release/cfstart RUN.trace RUN.start` writes a file with
 just those (and the recorded audio), about 50 MB, which `cfrun` takes in
-place of the recording: use it where memory is short. It prints the CPU time per emulated second, and compares the
+place of the recording: use it where memory is short. With
+`--card plusdrive.img --sd-flag 40fdd590` the file also carries the
++Drive: the used sectors of the card image the recording's emulator ran
+against, and where the firmware's card driver keeps its state (`sd_flag`
+in `emu/symbols.py`; the address is Model:Cycles 1.13's). Without a card
+the firmware's project and pattern saves never finish. It prints the CPU time per emulated second, and compares the
 audio it plays with the recording's: how long the two are bit-identical,
 then level and correlation, since its clock counts real instructions and
 the two runs drift apart by samples. `--wav` writes both as WAV files (to

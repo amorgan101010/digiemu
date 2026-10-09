@@ -10,6 +10,7 @@
 use crate::board::{I2c, Panel};
 use crate::cpu::{Bus, Cpu, Mem};
 use crate::edma::Bank;
+use crate::esdhc::Esdhc;
 use crate::interp::Interp;
 use crate::intfrc::Forced;
 use crate::rtos::{Idle, Unblock};
@@ -35,6 +36,8 @@ pub struct Devices {
     pub bank: Bank,
     pub panel: Panel,
     pub i2c: I2c,
+    /// The +Drive, if the machine was given a card.
+    pub esdhc: Option<Esdhc>,
     pub idle: Idle,
     pub unblock: Unblock,
     /// The samples played so far, as the eDMA read them: 8 bytes a frame.
@@ -101,7 +104,7 @@ struct DevBus(Rc<RefCell<Devices>>);
 impl Bus for DevBus {
     fn access(&mut self, m: &mut Mem, write: bool, addr: u32, size: u32, value: u32) {
         let d = &mut *self.0.borrow_mut();
-        let Devices { dtims, forced, ssi, bank, panel, i2c, audio, end_step, raised, .. } = d;
+        let Devices { dtims, forced, ssi, bank, panel, i2c, esdhc, audio, end_step, raised, .. } = d;
         let mut h = NHost { c: None, m, render: None, audio, end: end_step, raised };
         if panel.owns(write, addr) {
             panel.access(&mut h, write, addr, size, value);
@@ -122,6 +125,11 @@ impl Bus for DevBus {
         }
         if i2c.owns(write, addr) {
             i2c.access(&mut h, write, addr, size, value);
+        }
+        if let Some(e) = esdhc.as_mut() {
+            if e.owns(write, addr) {
+                e.access(&mut h, write, addr, size, value);
+            }
         }
     }
 }
@@ -215,6 +223,7 @@ impl Machine {
                 _ => {}
             }
         }
+        d.esdhc = tr.card.clone();
         if seen & 0x3ff != 0x3ff {
             return Err(format!("the recording lacks some model's state (have {seen:#b})"));
         }

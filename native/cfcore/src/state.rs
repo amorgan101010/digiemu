@@ -14,6 +14,7 @@
 use crate::board::{I2c, Panel};
 use crate::cpu::{ChunkKind, Cpu, Mem, CHUNK, CHUNKS};
 use crate::edma::Bank;
+use crate::esdhc::{Card, Esdhc, SECTOR};
 use crate::intfrc::Forced;
 use crate::machine::{Devices, Input, Machine};
 use crate::rtos::{Idle, Unblock};
@@ -21,7 +22,7 @@ use crate::ssi::{Render, Ssi};
 use crate::timers::{Clock, Dtims, Pits};
 use std::collections::VecDeque;
 
-const MAGIC: &[u8; 8] = b"CFSV1\0\0\0";
+const MAGIC: &[u8; 8] = b"CFSV2\0\0\0";
 const END: &[u8; 4] = b"END.";
 const ZERO: u8 = 0x80;
 
@@ -499,8 +500,61 @@ fn sorted(set: &std::collections::HashSet<u32>) -> Vec<u32> {
     v
 }
 
+fn put_esdhc(w: &mut W, e: &Esdhc) {
+    let Esdhc { status, cmd_sem, data_sem, dma_sem, pattern, armed, commands, bytes_moved, card } = e;
+    for v in [status, cmd_sem, data_sem, dma_sem, pattern] {
+        w.u32(*v);
+    }
+    w.flag(*armed);
+    w.u64(*commands);
+    w.u64(*bytes_moved);
+    let Card { blocks, rca, selected, erase_from, erase_to, sectors } = card;
+    w.u32(*blocks);
+    w.u16(*rca);
+    w.flag(*selected);
+    for v in [erase_from, erase_to] {
+        w.flag(v.is_some());
+        w.u32(v.unwrap_or(0));
+    }
+    w.u32(sectors.len() as u32);
+    for (n, data) in sectors {
+        w.u32(*n);
+        w.bytes(&data[..]);
+    }
+}
+
+fn get_esdhc(r: &mut R) -> Res<Esdhc> {
+    let mut e = Esdhc {
+        status: r.u32()?,
+        cmd_sem: r.u32()?,
+        data_sem: r.u32()?,
+        dma_sem: r.u32()?,
+        pattern: r.u32()?,
+        armed: r.flag()?,
+        commands: r.u64()?,
+        bytes_moved: r.u64()?,
+        card: Card::default(),
+    };
+    let c = &mut e.card;
+    c.blocks = r.u32()?;
+    c.rca = r.u16()?;
+    c.selected = r.flag()?;
+    for v in [&mut c.erase_from, &mut c.erase_to] {
+        let has = r.flag()?;
+        let n = r.u32()?;
+        *v = has.then_some(n);
+    }
+    for _ in 0..r.count(4 + SECTOR)? {
+        let n = r.u32()?;
+        let mut data = Box::new([0u8; SECTOR]);
+        data.copy_from_slice(r.bytes(SECTOR)?);
+        c.sectors.insert(n, data);
+    }
+    Ok(e)
+}
+
 fn put_devices(w: &mut W, d: &Devices) {
-    let Devices { pits, dtims, forced, ssi, bank, panel, i2c, idle, unblock, audio, end_step, raised } = d;
+    let Devices { pits, dtims, forced, ssi, bank, panel, i2c, esdhc, idle, unblock, audio, end_step, raised } = d;
     put_clock(w, &pits.0);
     let Dtims { clock, arm, now } = dtims;
     put_clock(w, clock);
@@ -514,6 +568,10 @@ fn put_devices(w: &mut W, d: &Devices) {
     put_bank(w, bank);
     put_panel(w, panel);
     put_i2c(w, i2c);
+    w.flag(esdhc.is_some());
+    if let Some(e) = esdhc {
+        put_esdhc(w, e);
+    }
     let Idle { addrs, spins, every } = idle;
     w.u32s(addrs);
     w.u64(*spins);
@@ -540,6 +598,7 @@ fn get_devices(r: &mut R) -> Res<Devices> {
     d.bank = get_bank(r)?;
     d.panel = get_panel(r)?;
     d.i2c = get_i2c(r)?;
+    d.esdhc = if r.flag()? { Some(get_esdhc(r)?) } else { None };
     d.idle = Idle { addrs: r.u32s()?, spins: r.u64()?, every: r.u64()? };
     d.unblock.pend = r.u32s()?;
     d.unblock.post = r.u32()?;
@@ -560,7 +619,8 @@ impl Machine {
         if self.c.halted != 0 || self.m.fault != 0 {
             return Err("the machine has stopped: not saving it".into());
         }
-        let mut w = W(Vec::with_capacity(self.m.mapped_chunks() * CHUNK + (1 << 20)));
+        let card = self.dev.borrow().esdhc.as_ref().map_or(0, |e| e.card.sectors.len() * (4 + SECTOR));
+        let mut w = W(Vec::with_capacity(self.m.mapped_chunks() * CHUNK + card + (1 << 20)));
         w.bytes(MAGIC);
         w.i64(self.ips);
         w.i64(self.now);

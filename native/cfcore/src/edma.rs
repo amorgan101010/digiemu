@@ -22,22 +22,22 @@ const MAP_PAGE: i64 = 0x10_0000;
 
 /// A transfer control descriptor, in its register order.
 #[derive(Clone, Copy, Debug)]
-struct Tcd {
-    saddr: u32,
-    attr: u32,
-    soff: i32,
-    nbytes: u32,
-    slast: u32,
-    daddr: u32,
-    citer: u32,
-    doff: i32,
-    dlast: u32,
-    biter: u32,
-    csr: u32,
+pub(crate) struct Tcd {
+    pub(crate) saddr: u32,
+    pub(crate) attr: u32,
+    pub(crate) soff: i32,
+    pub(crate) nbytes: u32,
+    pub(crate) slast: u32,
+    pub(crate) daddr: u32,
+    pub(crate) citer: u32,
+    pub(crate) doff: i32,
+    pub(crate) dlast: u32,
+    pub(crate) biter: u32,
+    pub(crate) csr: u32,
 }
 
 impl Tcd {
-    fn parse(raw: &[u8; 0x20]) -> Tcd {
+    pub(crate) fn parse(raw: &[u8; 0x20]) -> Tcd {
         let be16 = |o: usize| u16::from_be_bytes([raw[o], raw[o + 1]]) as u32;
         let be32 = |o: usize| u32::from_be_bytes([raw[o], raw[o + 1], raw[o + 2], raw[o + 3]]);
         Tcd {
@@ -55,7 +55,7 @@ impl Tcd {
         }
     }
 
-    fn pack(&self) -> [u8; 0x20] {
+    pub(crate) fn pack(&self) -> [u8; 0x20] {
         let mut raw = [0u8; 0x20];
         raw[0x00..0x04].copy_from_slice(&self.saddr.to_be_bytes());
         raw[0x04..0x06].copy_from_slice(&(self.attr as u16).to_be_bytes());

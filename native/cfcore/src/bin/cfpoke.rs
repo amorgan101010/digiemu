@@ -15,6 +15,9 @@
 //!     screen AT      print the screen the pointer at hex AT names
 //!     peek AT N      print N bytes of guest memory at hex AT
 //!     frames         print the panel's scan frames so far and the time
+//!     save FILE      write the whole machine, to open as IN later
+//!     card           print what the +Drive has done and holds
+//!     cardout FILE   write the +Drive as a raw image, up to its last sector in use
 use cfcore::ffi::{Bench, SCREEN_BYTES};
 
 fn lit(mask: u64) -> String {
@@ -75,6 +78,26 @@ fn main() {
                     last = now;
                 }
                 println!("changed: {} | lit at the end: {}", lit(seen), lit(last));
+            }
+            "save" => {
+                let out = it.next().expect("FILE");
+                b.save_to(out).unwrap_or_else(|e| panic!("{e}"));
+            }
+            "card" => match b.card() {
+                Some(e) => println!(
+                    "card: {} commands, {} bytes moved, {} of {} sectors in use",
+                    e.commands,
+                    e.bytes_moved,
+                    e.card.sectors.len(),
+                    e.card.blocks
+                ),
+                None => println!("card: none"),
+            },
+            "cardout" => {
+                let out = it.next().expect("FILE");
+                let e = b.card().expect("a card");
+                let last = e.card.sectors.keys().next_back().map_or(0, |n| *n as usize + 1);
+                std::fs::write(out, e.card.read(0, last * 512)).unwrap();
             }
             "frames" => {
                 let (frames, at) = b.frames();

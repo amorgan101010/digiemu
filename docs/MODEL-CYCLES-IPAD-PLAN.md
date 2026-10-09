@@ -681,12 +681,11 @@ leaving.
 
 Not covered:
 
-- [O] The firmware's own save and load (projects, patterns to the +Drive).
-  `emu/esdhc.py` is not in the native machine and its registers are plain
-  memory there, so what the firmware does when asked is not known: it was
-  not tried. If the firmware waits for the card for ever, the machine does
-  not stop, and the next save keeps it that way: `cycles.save.prev` is the
-  one before, and deleting both starts over.
+- **[C]** The firmware's own save and load (projects, patterns to the
+  +Drive) hung without a card model: Aileen's project save on the iPad
+  stopped at the progress bar, and the app's own save then kept the
+  machine that way. The native machine has the +Drive now: see "The
+  +Drive" below.
 - A kept machine is for the build that made it: the same firmware image and
   the same clock (`cfcore_open` refuses another `ips`). A change to a
   model's fields changes the format; there is one version and no migration.
@@ -856,6 +855,64 @@ screen is redrawn ten times a second, so both buffers agree there once it
 has settled, and the encoder notes above stand. On the device every value
 drawn once did show one step late, so how the knobs felt there was judged
 through that.
+
+## The +Drive (2026-10-09, PC)
+
+Aileen saved a project from the firmware's menu on the iPad and it stopped
+at the progress bar. Reproduced with `cfpoke` on `cycles-play.start`
+(SETTINGS, PROJECT, slot 03, SAVE, Yes): "Saving 'STOCK'" stays at about
+70% for as long as it is run. The card driver had issued two commands, a
+SET_BLOCK_COUNT and a 128-sector WRITE_MULTIPLE_BLOCK, and was waiting on
+the semaphore the DMA channel's interrupt posts.
+
+`native/cfcore/src/esdhc.rs` is a port of `emu/esdhc.py`: XFERTYP as the
+command trigger, SYSCTL's self-clearing bits, the bus-test pattern, eDMA
+channel 59 for the data (armed through SERQ at 0xFC044018 before the
+command), the erase commands, and the interrupt handler's work done in
+its place (the driver's status word cleared, its three semaphores
+posted). The registers stay guest memory, as in the Python model. Not
+ported: the cold bring-up's needs beyond what that gives (the starting
+state has storage up already), the capacity correction for old snapshots,
+and the image file's mapping and flushing.
+
+- **The card is part of the machine.** It is the sectors that hold
+  anything, by number; the rest read as zeros. The firmware keeps the
+  volume's tables in memory, so a card file written apart from the saved
+  machine could be newer than the machine restored beside it. Kept inside
+  the saved machine, the two are written by the same rename. The Cycles'
+  card has 4,210 sectors in use of 3,866,624 (2.2 MB), and a project save
+  adds about 4.2 MB.
+- **A starting state brings its card.** `cfstart TRACE OUT --card IMAGE
+  --sd-flag HEX` adds an item (tag 30) with the driver's flag address, the
+  card's size (the word the driver keeps 0x24 after the flag) and the used
+  sectors of the raw image the recording's emulator ran against. For
+  Model:Cycles 1.13 the flag is at 0x40fdd590 (`sd_flag` from
+  `emu/symbols.py`, resolved here on the image in the starting state). A
+  state with no card item runs as before, with no controller model.
+- **The saved machine is `CFSV2`.** A `CFSV1` file is no longer taken for
+  a saved machine; the app sets it aside as `cycles.save.bad` and starts
+  from the bundled state.
+
+Measured on the build without the translated blocks, from
+`cycles-play-card.start`:
+
+| Check | Result |
+| --- | --- |
+| Project save to slot 03 | "Save OK"; 138 commands, 4,329,472 bytes moved, 12,472 sectors in use |
+| The machine saved, opened again, NEW project | "Success"; the pattern is "No Name", one page light |
+| That machine saved, opened again, LOAD 03 | "Load OK"; the pattern is "Modex 2003" again, four page lights |
+| After NEW, LOAD 01, the factory project, which only the card image holds | "Load OK"; "Modex 2003", four page lights |
+| 2 s playing, unbroken and as 1 s + 1 s through a save | the same machine hash, and the same audio hash as the state without a card |
+| 0.7 s + 1.3 s after the load, with and without a save between | the same machine hash |
+| Save, NEW and LOAD again on the build with the translated blocks | the same: 138 then 276 commands, one page light after NEW, four after LOAD |
+
+[O] On a device: nothing here was built or run there. The bundled
+`out/cfcore/ios/cycles-play.start` has to be replaced by one made with
+`--card`. [O] The sample browser and anything else that reads the card was
+not tried. [O] FORMAT +DRIVE was not tried (the erase is ported, not
+run). [O] The Python emulator was not run beside it: the check is that
+the firmware reads back what it wrote, not that the two models agree
+command for command.
 
 ## What the Python side did per second (the scope that was ported)
 
