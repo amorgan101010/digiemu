@@ -42,6 +42,10 @@ targets:
       - Cycles
       - path: ../../out/cfcore/ios/cycles-play.start
         buildPhase: resources
+      # The +Drive's card file, when the state was made with one.
+      - path: ../../out/cfcore/ios/cycles-play.card
+        buildPhase: resources
+        optional: true
       # The drawn faceplate, shared with the desktop window.
       - path: ../../emu/assets/panels/model-cycles
         buildPhase: resources

@@ -27,6 +27,11 @@
 //! `cfcore_open` takes in place of a starting state.
 //!
 //!     int cfcore_save(void *bench, const char *path, int wait);
+//!
+//! A machine whose +Drive is over a card file (`esdhc::Base`, for a card
+//! with samples) is opened with it:
+//!
+//!     void *cfcore_open_card(const char *path, const char *card, int64_t ips);
 use crate::aot;
 use crate::machine::Machine;
 use std::cell::RefCell;
@@ -66,10 +71,16 @@ fn fail(e: String) {
 
 impl Bench {
     pub fn open(path: &str, ips: i64) -> Result<Bench, String> {
+        Bench::open_with(path, ips, None)
+    }
+
+    /// `open`, with the card file the machine's +Drive is over, if it is
+    /// over one (`Machine::open_with`).
+    pub fn open_with(path: &str, ips: i64, card: Option<&str>) -> Result<Bench, String> {
         if ips <= 0 {
             return Err("ips must be positive".into());
         }
-        let k = Machine::open(path, ips)?;
+        let k = Machine::open_with(path, ips, card)?;
         let seen = (k.now - k.idle_skipped, 0, k.idle_skipped, k.dev.borrow().raised);
         Ok(Bench { k, seen })
     }
@@ -323,6 +334,24 @@ pub unsafe extern "C" fn cfcore_save(bench: *mut c_void, path: *const c_char, wa
 pub unsafe extern "C" fn cfcore_open(path: *const c_char, ips: i64) -> *mut c_void {
     let path = CStr::from_ptr(path).to_string_lossy();
     match Bench::open(&path, ips) {
+        Ok(b) => Box::into_raw(Box::new(b)) as *mut c_void,
+        Err(e) => {
+            fail(e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// `cfcore_open` for a machine whose +Drive is over the card file at
+/// `card`, which may be null.
+///
+/// # Safety
+/// `path` must be a NUL-terminated string, and `card` one or null.
+#[no_mangle]
+pub unsafe extern "C" fn cfcore_open_card(path: *const c_char, card: *const c_char, ips: i64) -> *mut c_void {
+    let path = CStr::from_ptr(path).to_string_lossy();
+    let card = (!card.is_null()).then(|| CStr::from_ptr(card).to_string_lossy().into_owned());
+    match Bench::open_with(&path, ips, card.as_deref()) {
         Ok(b) => Box::into_raw(Box::new(b)) as *mut c_void,
         Err(e) => {
             fail(e);

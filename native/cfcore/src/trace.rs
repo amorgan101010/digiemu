@@ -392,6 +392,12 @@ impl Trace {
                     t.card = Some(crate::esdhc::Esdhc::for_driver(flag, card));
                     continue;
                 }
+                32 => {
+                    let flag = r.u32()?;
+                    let card = crate::esdhc::Card { blocks: r.u32()?, base_id: r.u64()?, ..Default::default() };
+                    t.card = Some(crate::esdhc::Esdhc::for_driver(flag, card));
+                    continue;
+                }
                 tag => return Err(format!("unknown item {tag} at byte {}", r.at - 1)),
             };
             t.items.push(item);
@@ -457,8 +463,16 @@ impl Trace {
 
 /// The item that gives a machine its +Drive: the address of the card
 /// driver's "storage is up" flag, the card's size in sectors, then each
-/// sector that holds anything.
+/// sector that holds anything (item 30), or the id of the card file that
+/// holds them (item 32).
 pub fn card_item(flag: u32, card: &crate::esdhc::Card) -> Vec<u8> {
+    if card.base_id != 0 {
+        let mut out = vec![32];
+        out.extend_from_slice(&flag.to_le_bytes());
+        out.extend_from_slice(&card.blocks.to_le_bytes());
+        out.extend_from_slice(&card.base_id.to_le_bytes());
+        return out;
+    }
     let mut out = vec![30];
     out.extend_from_slice(&flag.to_le_bytes());
     out.extend_from_slice(&card.blocks.to_le_bytes());

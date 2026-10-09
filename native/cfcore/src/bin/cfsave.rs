@@ -1,7 +1,7 @@
 //! Run the machine, save it, and say what it came to: for checking that a
 //! saved machine carries on as one that was never stopped does.
 //!
-//!     cfsave IN --ips N [--run S]... [--out FILE] [--reload] [--let-go]
+//!     cfsave IN --ips N [--card FILE] [--run S]... [--out FILE] [--reload] [--let-go]
 //!
 //! IN is a starting state or a saved machine. Each `--run` runs that many
 //! more emulated seconds. `--reload` saves and restores the machine in
@@ -22,6 +22,7 @@ fn main() {
     let mut out = None;
     let mut reload = false;
     let mut let_go = false;
+    let mut card = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -29,18 +30,21 @@ fn main() {
             "--run" => runs.push(args.next().and_then(|v| v.parse::<f64>().ok()).expect("--run S")),
             "--out" => out = args.next(),
             "--reload" => reload = true,
+            "--card" => card = args.next(),
             "--let-go" => let_go = true,
             _ => path = Some(a),
         }
     }
-    let mut k = Machine::open(&path.expect("IN"), ips).unwrap_or_else(|e| panic!("{e}"));
+    let mut k = Machine::open_with(&path.expect("IN"), ips, card.as_deref()).unwrap_or_else(|e| panic!("{e}"));
     if let_go {
         k.dev.borrow_mut().panel.let_go();
     }
     for (n, seconds) in runs.iter().enumerate() {
         if reload && n > 0 {
             let saved = k.save().unwrap_or_else(|e| panic!("{e}"));
+            let base = k.dev.borrow().esdhc.as_ref().and_then(|e| e.card.base.clone());
             k = Machine::restore(&saved).unwrap_or_else(|e| panic!("{e}"));
+            k.attach_card(base).unwrap_or_else(|e| panic!("{e}"));
             let again = k.save().unwrap_or_else(|e| panic!("{e}"));
             if again != saved {
                 panic!("a restored machine does not save as it was saved");

@@ -22,7 +22,7 @@ use crate::ssi::{Render, Ssi};
 use crate::timers::{Clock, Dtims, Pits};
 use std::collections::VecDeque;
 
-const MAGIC: &[u8; 8] = b"CFSV2\0\0\0";
+const MAGIC: &[u8; 8] = b"CFSV3\0\0\0";
 const END: &[u8; 4] = b"END.";
 const ZERO: u8 = 0x80;
 
@@ -508,7 +508,14 @@ fn put_esdhc(w: &mut W, e: &Esdhc) {
     w.flag(*armed);
     w.u64(*commands);
     w.u64(*bytes_moved);
-    let Card { blocks, rca, selected, erase_from, erase_to, sectors } = card;
+    // The card file itself is not saved: only which one it is.
+    let Card { blocks, rca, selected, erase_from, erase_to, sectors, base_id, base: _, erased } = card;
+    w.u64(*base_id);
+    w.u32(erased.len() as u32);
+    for (a, b) in erased {
+        w.u32(*a);
+        w.u32(*b);
+    }
     w.u32(*blocks);
     w.u16(*rca);
     w.flag(*selected);
@@ -536,6 +543,10 @@ fn get_esdhc(r: &mut R) -> Res<Esdhc> {
         card: Card::default(),
     };
     let c = &mut e.card;
+    c.base_id = r.u64()?;
+    for _ in 0..r.count(8)? {
+        c.erased.push((r.u32()?, r.u32()?));
+    }
     c.blocks = r.u32()?;
     c.rca = r.u16()?;
     c.selected = r.flag()?;

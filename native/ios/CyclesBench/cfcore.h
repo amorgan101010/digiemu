@@ -13,6 +13,9 @@ struct cf_chunk {
 };
 
 void *cfcore_open(const char *path, int64_t ips);
+// The same, for a machine whose +Drive is over a card file; card may be
+// NULL for one that is not.
+void *cfcore_open_card(const char *path, const char *card, int64_t ips);
 int cfcore_run(void *bench, double seconds, struct cf_chunk *out);
 void cfcore_close(void *bench);
 const char *cfcore_error(void);

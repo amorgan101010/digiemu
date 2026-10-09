@@ -296,17 +296,50 @@ impl Machine {
     /// The machine in the file at `path`: a saved one (`save`), which must
     /// have been saved on this clock, or a recording's starting state.
     pub fn open(path: &str, ips: i64) -> Result<Machine, String> {
+        Machine::open_with(path, ips, None)
+    }
+
+    /// `open`, for a machine whose +Drive is over the card file at `card`
+    /// (`esdhc::Base`). A machine that has no use for one ignores it.
+    pub fn open_with(path: &str, ips: i64, card: Option<&str>) -> Result<Machine, String> {
         let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-        if crate::state::is_saved(&data) {
+        let k = if crate::state::is_saved(&data) {
             let k = Machine::restore(&data).map_err(|e| format!("{path}: {e}"))?;
             if k.ips != ips {
                 return Err(format!("{path}: saved at {} instructions a second, not {ips}", k.ips));
             }
-            return Ok(k);
+            k
+        } else {
+            let tr = Trace::parse(&data).map_err(|e| format!("{path}: {e}"))?;
+            drop(data);
+            Machine::from_trace(&tr, ips)?
+        };
+        let base = match card {
+            Some(card) if k.card_wanted() != 0 => Some(crate::esdhc::Base::open(card)?),
+            _ => None,
+        };
+        k.attach_card(base).map_err(|e| format!("{path}: {e}"))?;
+        Ok(k)
+    }
+
+    /// The id of the card file this machine's +Drive is over, 0 for none.
+    pub fn card_wanted(&self) -> u64 {
+        self.dev.borrow().esdhc.as_ref().map_or(0, |e| e.card.base_id)
+    }
+
+    /// Put the card file under the machine's +Drive. A machine restored or
+    /// made from a starting state that names one does not run without it.
+    pub fn attach_card(&self, base: Option<std::sync::Arc<crate::esdhc::Base>>) -> Result<(), String> {
+        let mut d = self.dev.borrow_mut();
+        let Some(e) = d.esdhc.as_mut().filter(|e| e.card.base_id != 0) else { return Ok(()) };
+        match base {
+            Some(b) if b.id == e.card.base_id => {
+                e.card.base = Some(b);
+                Ok(())
+            }
+            Some(_) => Err("its +Drive is over another card file than the one given".into()),
+            None => Err("its +Drive is over a card file, and none was given".into()),
         }
-        let tr = Trace::parse(&data).map_err(|e| format!("{path}: {e}"))?;
-        drop(data);
-        Machine::from_trace(&tr, ips)
     }
 
     /// Write the machine to `path`.
@@ -403,6 +436,9 @@ impl Machine {
     /// Run until the clock reaches `until`. -> why it stopped early, if it
     /// did.
     pub fn run(&mut self, until: i64) -> Result<(), String> {
+        if self.dev.borrow().esdhc.as_ref().is_some_and(|e| e.card.base_id != 0 && e.card.base.is_none()) {
+            return Err("the +Drive's card file has not been given".into());
+        }
         while self.now < until {
             while let Some(input) = self.inputs.first().copied() {
                 if input.at > self.now {

@@ -17,6 +17,8 @@
 use crate::edma::Tcd;
 use crate::timers::Host;
 use std::collections::BTreeMap;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::sync::{Arc, Mutex};
 
 const BASE: u32 = 0xFC0C_C000;
 const CMDARG: u32 = 0x08;
@@ -54,7 +56,149 @@ pub const SECTOR: usize = 512;
 const MANUFACTURER: u32 = 0x11;
 const NAME: &[u8; 6] = b"004GE0";
 
-#[derive(Clone, Debug, Default, PartialEq)]
+const BASE_MAGIC: &[u8; 8] = b"CFCD1\0\0\0";
+
+fn fnv(hash: u64, data: &[u8]) -> u64 {
+    data.iter().fold(hash, |h, b| (h ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3))
+}
+
+/// A card's contents in a file of their own, never written: the runs of
+/// sectors that hold anything, then their bytes. A card too big to keep in
+/// memory and in every saved machine (one with samples on it) is one of
+/// these under the sectors written since.
+///
+/// The file: `CFCD1`, the card's size in sectors, the number of runs and a
+/// hash of the data (u32, u32, u64, little-endian), each run's first sector
+/// and length (u32, u32), then the data.
+pub struct Base {
+    file: Mutex<std::fs::File>,
+    /// What tells this file from another: a hash of everything before the
+    /// data, which includes the data's own hash.
+    pub id: u64,
+    pub blocks: u32,
+    /// First sector, length in sectors, offset of its bytes in the file.
+    runs: Vec<(u32, u32, u64)>,
+}
+
+impl std::fmt::Debug for Base {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Base({:#x}, {} runs)", self.id, self.runs.len())
+    }
+}
+
+impl Base {
+    /// Write the card file for `image`, a raw image of the start of a card
+    /// of `blocks` sectors. -> its id.
+    pub fn pack(image: &[u8], blocks: u32, out: &str) -> Result<u64, String> {
+        let mut runs: Vec<(u32, u32)> = Vec::new();
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for (n, sector) in image.chunks(SECTOR).enumerate() {
+            if sector.iter().all(|b| *b == 0) {
+                continue;
+            }
+            hash = fnv(hash, sector);
+            if sector.len() < SECTOR {
+                hash = fnv(hash, &vec![0u8; SECTOR - sector.len()]);
+            }
+            match runs.last_mut() {
+                Some((start, len)) if *start + *len == n as u32 => *len += 1,
+                _ => runs.push((n as u32, 1)),
+            }
+        }
+        let mut head = BASE_MAGIC.to_vec();
+        head.extend_from_slice(&blocks.to_le_bytes());
+        head.extend_from_slice(&(runs.len() as u32).to_le_bytes());
+        head.extend_from_slice(&hash.to_le_bytes());
+        for (start, len) in &runs {
+            head.extend_from_slice(&start.to_le_bytes());
+            head.extend_from_slice(&len.to_le_bytes());
+        }
+        let err = |e: std::io::Error| format!("{out}: {e}");
+        let mut f = std::io::BufWriter::new(std::fs::File::create(out).map_err(err)?);
+        f.write_all(&head).map_err(err)?;
+        for (start, len) in &runs {
+            let at = *start as usize * SECTOR;
+            let end = (at + *len as usize * SECTOR).min(image.len());
+            f.write_all(&image[at..end]).map_err(err)?;
+            f.write_all(&vec![0u8; at + *len as usize * SECTOR - end]).map_err(err)?;
+        }
+        f.flush().map_err(err)?;
+        Ok(fnv(0xcbf2_9ce4_8422_2325, &head))
+    }
+
+    pub fn open(path: &str) -> Result<Arc<Base>, String> {
+        let err = |e: std::io::Error| format!("{path}: {e}");
+        let mut file = std::fs::File::open(path).map_err(err)?;
+        let size = file.metadata().map_err(err)?.len();
+        let mut head = vec![0u8; 24];
+        file.read_exact(&mut head).map_err(err)?;
+        if &head[..8] != BASE_MAGIC {
+            return Err(format!("{path}: not a card file"));
+        }
+        let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        let (blocks, count) = (word(&head, 8), word(&head, 12) as u64);
+        if 24 + count * 8 > size {
+            return Err(format!("{path}: the card file is cut short"));
+        }
+        let mut table = vec![0u8; count as usize * 8];
+        file.read_exact(&mut table).map_err(err)?;
+        let mut runs = Vec::with_capacity(count as usize);
+        let mut at = 24 + count * 8;
+        let mut next = 0u64;
+        for row in table.chunks(8) {
+            let (start, len) = (word(row, 0), word(row, 4));
+            if (start as u64) < next || len == 0 {
+                return Err(format!("{path}: the card file is damaged"));
+            }
+            runs.push((start, len, at));
+            at += len as u64 * SECTOR as u64;
+            next = start as u64 + len as u64;
+        }
+        if at != size {
+            return Err(format!("{path}: the card file is cut short"));
+        }
+        head.extend_from_slice(&table);
+        Ok(Arc::new(Base { file: Mutex::new(file), id: fnv(0xcbf2_9ce4_8422_2325, &head), blocks, runs }))
+    }
+
+    /// How many sectors the file holds.
+    pub fn sectors(&self) -> u64 {
+        self.runs.iter().map(|r| r.1 as u64).sum()
+    }
+
+    /// Whether the file has anything for `sector`.
+    fn has(&self, sector: u32) -> bool {
+        let i = self.runs.partition_point(|r| r.0 <= sector);
+        i > 0 && sector - self.runs[i - 1].0 < self.runs[i - 1].1
+    }
+
+    /// Lay what the file has for the sectors from `sector` on over `out`.
+    fn read(&self, sector: u32, out: &mut [u8]) {
+        if out.is_empty() {
+            return;
+        }
+        let end = sector as u64 + out.len().div_ceil(SECTOR) as u64;
+        let first = self.runs.partition_point(|r| r.0 as u64 + r.1 as u64 <= sector as u64);
+        let mut file = self.file.lock().unwrap_or_else(|e| e.into_inner());
+        for &(start, len, at) in &self.runs[first..] {
+            if start as u64 >= end {
+                break;
+            }
+            let from = start.max(sector);
+            let to = (start as u64 + len as u64).min(end);
+            let o = (from - sector) as usize * SECTOR;
+            let n = (((to - from as u64) as usize) * SECTOR).min(out.len() - o);
+            let ok = file
+                .seek(SeekFrom::Start(at + (from - start) as u64 * SECTOR as u64))
+                .and_then(|_| file.read_exact(&mut out[o..o + n]));
+            if ok.is_err() {
+                out[o..o + n].fill(0);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct Card {
     /// The card's size in sectors.
     pub blocks: u32,
@@ -63,8 +207,25 @@ pub struct Card {
     /// CMD35's and CMD36's sectors, waiting for CMD38.
     pub erase_from: Option<u32>,
     pub erase_to: Option<u32>,
-    /// The sectors that are not all zeros.
+    /// Without a card file: the sectors that are not all zeros. With one:
+    /// the sectors written since, zeros included.
     pub sectors: BTreeMap<u32, Box<[u8; SECTOR]>>,
+    /// The id of the card file that belongs under them, 0 for none, and
+    /// the file once it has been given (`Machine::attach_card`).
+    pub base_id: u64,
+    pub base: Option<Arc<Base>>,
+    /// Sectors of the card file that have been erased: first and last,
+    /// in order, none touching.
+    pub erased: Vec<(u32, u32)>,
+}
+
+impl PartialEq for Card {
+    fn eq(&self, other: &Card) -> bool {
+        (self.blocks, self.rca, self.selected, self.erase_from, self.erase_to, self.base_id)
+            == (other.blocks, other.rca, other.selected, other.erase_from, other.erase_to, other.base_id)
+            && self.sectors == other.sectors
+            && self.erased == other.erased
+    }
 }
 
 impl Card {
@@ -112,10 +273,7 @@ impl Card {
                 // The range includes its last sector.
                 if let (Some(from), Some(to)) = (self.erase_from.take(), self.erase_to.take()) {
                     if from <= to {
-                        let gone: Vec<u32> = self.sectors.range(from..=to).map(|(n, _)| *n).collect();
-                        for n in gone {
-                            self.sectors.remove(&n);
-                        }
+                        self.erase(from, to);
                     }
                 }
                 self.erase_from = None;
@@ -140,6 +298,30 @@ impl Card {
         b
     }
 
+    /// Erase the sectors `from` to `to`, both included.
+    fn erase(&mut self, from: u32, to: u32) {
+        let gone: Vec<u32> = self.sectors.range(from..=to).map(|(n, _)| *n).collect();
+        for n in gone {
+            self.sectors.remove(&n);
+        }
+        if self.base_id == 0 {
+            return;
+        }
+        let (mut from, mut to) = (from, to);
+        let mut kept = Vec::with_capacity(self.erased.len() + 1);
+        for &(a, b) in &self.erased {
+            if b as u64 + 1 < from as u64 || to as u64 + 1 < a as u64 {
+                kept.push((a, b));
+            } else {
+                from = from.min(a);
+                to = to.max(b);
+            }
+        }
+        kept.push((from, to));
+        kept.sort();
+        self.erased = kept;
+    }
+
     /// `len` bytes from `sector` on.
     pub fn read(&self, sector: u32, len: usize) -> Vec<u8> {
         let mut out = vec![0u8; len];
@@ -147,6 +329,17 @@ impl Card {
             return out;
         }
         let last = sector.saturating_add(((len - 1) / SECTOR) as u32);
+        if let Some(base) = &self.base {
+            base.read(sector, &mut out);
+            for &(a, b) in &self.erased {
+                let (a, b) = (a.max(sector), b.min(last));
+                if a <= b {
+                    let at = (a - sector) as usize * SECTOR;
+                    let end = ((b - sector) as usize * SECTOR + SECTOR).min(len);
+                    out[at..end].fill(0);
+                }
+            }
+        }
         for (n, data) in self.sectors.range(sector..=last) {
             let at = (*n - sector) as usize * SECTOR;
             let c = SECTOR.min(len - at);
@@ -159,9 +352,15 @@ impl Card {
     pub fn write(&mut self, sector: u32, data: &[u8]) {
         for (k, part) in data.chunks(SECTOR).enumerate() {
             let Some(n) = sector.checked_add(k as u32) else { return };
-            if part.len() == SECTOR && part.iter().all(|b| *b == 0) {
+            // Zeros need keeping only over something the card file has.
+            let covered = self.base.as_ref().is_some_and(|b| b.has(n)) && !self.erased.iter().any(|&(a, b)| a <= n && n <= b);
+            if part.len() == SECTOR && part.iter().all(|b| *b == 0) && !covered {
                 self.sectors.remove(&n);
                 continue;
+            }
+            if part.len() < SECTOR && !self.sectors.contains_key(&n) {
+                let was = self.read(n, SECTOR);
+                self.sectors.insert(n, Box::new(was.try_into().unwrap()));
             }
             let slot = self.sectors.entry(n).or_insert_with(|| Box::new([0; SECTOR]));
             slot[..part.len()].copy_from_slice(part);

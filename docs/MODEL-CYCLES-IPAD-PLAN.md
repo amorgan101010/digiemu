@@ -1091,6 +1091,62 @@ with a sample loaded plays it when opened again. The starting state in
 still whole inside every saved machine: fine at 4.4 MB, not at a real
 pack's size. [O] Loading samples from the device itself.
 
+## The Digitakt's samples, and the card as a file of its own (2026-10-09, PC)
+
+Aileen wants the samples the Digitakt has. Its card here
+(`portable/firmware/dt1-1.53-9bdd44bb/plusdrive.img`) holds 45 folders
+and 1,159 samples in the same ekFS layout as the Cycles' (65,536 inodes,
+61,408 blocks of 16 KB, the same superblock checksum).
+
+- **[C] Copying the sample region whole was not enough.** The firmware
+  booted on it and the browser listed the folders, but a sample from
+  Central Sidstation was refused: "Not 48kHz mono". `emu/samples.py`
+  stores a WAV at its own rate, which the Digitakt plays as it is; this
+  sampler wants 48 kHz. Of the 1,159, 550 were at 44.1 kHz (1,323 s).
+- **`tools/ekfscopy.py FROM TO --rate 48000`** copies the tree instead,
+  folder for folder, resampling what is at another rate
+  (`scipy.signal.resample_poly`): 45 folders, 1,159 files, 549 MB. The
+  Cycles card then has 1,162 samples (with the three test files), all at
+  48 kHz.
+- **A card that size cannot be in memory and in every saved machine**, so
+  it is a file of its own (`esdhc::Base`, written by
+  `cfstart --card-file`): the runs of sectors in use and their bytes,
+  read as needed and never written. The machine keeps the sectors written
+  since and the ranges erased, and those are what a saved machine (now
+  `CFSV3`) carries, with the card file's id. A starting state names its
+  card file by id (item 32). A machine that names one is opened with it
+  (`Machine::open_with`, `cfcore_open_card`, `--card` on `cfpoke` and
+  `cfsave`); without it, or with another, it is refused and does not run.
+  A small card can still travel inside the starting state as before.
+- The app looks for `cycles-play.card` beside `cycles-play.start` in its
+  bundle and opens both the bundled state and the kept machine with it
+  (`Engine.swift`, `project.yml`, `build.sh [START [CARD]]`). Not built.
+  CyclesBench does not get the card, so it cannot open such a state.
+
+Measured on the build without the translated blocks, from
+`out/cfcore/custom/play3.start` and `dt-samples.card` (580 MB, 1,133,517
+sectors; the starting state is 52 MB):
+
+| Check | Result |
+| --- | --- |
+| Opened without the card file | refused: "its +Drive is over a card file, and none was given" |
+| FUNCTION + MACHINE | Root lists 14 entries; Classic Vinyl Beats has 53 files |
+| A sample from Classic Vinyl Beats loaded, pad T1 | "Sample loaded to track 1"; output peaks at 12% and dies away in 0.35 s |
+| The machine saved (48 MB) and opened again, pad T1 | the same |
+| A project saved to slot 03 after that | "Save OK"; 8,262 sectors kept in the machine, which saves as 52 MB |
+
+On the build with the translated blocks, from the files staged for the
+Mac: the same load, the same levels before and after a save, and 1 s +
+1 s through a save gives the unbroken 2 s run's machine.
+
+[O] On a device, where the app would be about 640 MB. [O] The six-semitone question above. [O] Whether a
+loaded sample is in tune and whole was not checked beyond its level.
+[O] Erase over the card file is written, not run.
+
+For the Mac, `out/cfcore/for-mac/` now has three files: `aot_gen.rs`
+(unchanged), `cycles-play.start` and `cycles-play.card`, all to go in the
+Mac's `out/cfcore/`.
+
 ## What the Python side did per second (the scope that was ported)
 
 Counted before the port, for the playing Cycles, per emulated second at

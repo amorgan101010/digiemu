@@ -161,11 +161,15 @@ final class Engine: ObservableObject {
             say("No starting state in the app")
             return
         }
+        // The +Drive's card file, if the state was made with one (a card
+        // with samples on it): the machine keeps only what it has written
+        // since, and is opened over this.
+        let card = Bundle.main.path(forResource: "cycles-play", ofType: "card")
         // The kept machine if there is one that opens, else the bundled
         // state. A kept one that stops in its first seconds is set aside.
         let kept = Engine.savePath
         var fromKept = FileManager.default.fileExists(atPath: kept)
-        var opened = fromKept ? cfcore_open(kept, instructionsPerSecond) : nil
+        var opened = fromKept ? cfcore_open_card(kept, card, instructionsPerSecond) : nil
         if opened == nil {
             if fromKept {
                 // It does not open: out of the way of the next save.
@@ -173,7 +177,7 @@ final class Engine: ObservableObject {
                 try? FileManager.default.moveItem(atPath: kept, toPath: kept + ".bad")
             }
             fromKept = false
-            opened = cfcore_open(path, instructionsPerSecond)
+            opened = cfcore_open_card(path, card, instructionsPerSecond)
         }
         guard var bench = opened else {
             say("Could not open the starting state: \(String(cString: cfcore_error()))")

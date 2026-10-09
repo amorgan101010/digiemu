@@ -1,7 +1,7 @@
 //! Work the panel of a machine from the command line and watch its LEDs
 //! and screen: for finding out what a key, a knob or an LED is.
 //!
-//!     cfpoke IN --ips N COMMAND...
+//!     cfpoke IN --ips N [--card FILE] COMMAND...
 //!
 //! IN is a starting state or a saved machine; the recording's own panel
 //! input is dropped. Commands, in order:
@@ -30,15 +30,18 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let path = args.next().expect("IN");
     let mut ips = 0i64;
+    let mut card = None;
     let mut rest: Vec<String> = Vec::new();
     while let Some(a) = args.next() {
         if a == "--ips" {
             ips = args.next().and_then(|v| v.parse().ok()).expect("--ips N");
+        } else if a == "--card" {
+            card = args.next();
         } else {
             rest.push(a);
         }
     }
-    let mut b = Bench::open(&path, ips).unwrap_or_else(|e| panic!("{e}"));
+    let mut b = Bench::open_with(&path, ips, card.as_deref()).unwrap_or_else(|e| panic!("{e}"));
     b.live();
     let mut pcm = Vec::new();
     let mut run = |b: &mut Bench, seconds: f64| {
@@ -121,10 +124,11 @@ fn main() {
             }
             "card" => match b.card() {
                 Some(e) => println!(
-                    "card: {} commands, {} bytes moved, {} of {} sectors in use",
+                    "card: {} commands, {} bytes moved, {} sectors kept here and {} in its file, of {}",
                     e.commands,
                     e.bytes_moved,
                     e.card.sectors.len(),
+                    e.card.base.as_ref().map_or(0, |b| b.sectors()),
                     e.card.blocks
                 ),
                 None => println!("card: none"),
