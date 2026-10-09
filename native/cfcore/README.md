@@ -144,7 +144,9 @@ The same project has a second scheme, Cycles, which plays the machine:
 sound, the panel over the drawn faceplate in `emu/assets/panels/model-cycles`,
 the screen and the LEDs. Build and install it the same way
 (`-scheme Cycles`, `Cycles.app`, `io.github.amorgan101010.cycles`).
-`cfscreen RUN.start 401492f0` prints the screen it reads, on the Mac.
+`cfscreen RUN.start 401492f4` prints the screen it reads, on the Mac: the
+second of the firmware's two buffer pointers, the frame the display shows.
+The first, at 401492f0, names the frame before it.
 
 The app keeps the machine between launches: `src/state.rs` writes the whole
 of it (`Machine::save`, `cfcore_save`) to a file that opens in place of a
@@ -164,7 +166,7 @@ what a key, a knob or an LED is: press and turn, then print the LEDs lit or
 the screen.
 
 ```sh
-target/release/cfpoke RUN.start --ips 211700000 key 1 1 1 run 0.1 key 1 1 0 run 0.3 leds screen 401492f0
+target/release/cfpoke RUN.start --ips 211700000 key 1 1 1 run 0.1 key 1 1 0 run 0.3 leds screen 401492f4
 ```
 
 What the first builds ran into (M1 MacBook Air, 8 GB, Xcode 27.0):

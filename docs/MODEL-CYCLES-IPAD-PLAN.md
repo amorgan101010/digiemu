@@ -606,7 +606,9 @@ input dropped, and keeps nothing when it closes.
   names, up to 30 times a second (`cfscreen` prints the same read on the
   Mac). It is read whenever the timer says, not at the firmware's swap, so
   a frame can be torn. The second address `emu/symbols.py` finds near it
-  (0x4014553c) does not hold a buffer pointer in this state.
+  (0x4014553c) does not hold a buffer pointer in this state. **[C]** That
+  pointer names the wrong buffer: see "The app read the screen one frame
+  late" below. The app now reads the pointer at 0x401492f4.
 - Aileen played it on the iPhone 13 and reports that it looks and works
   well, sound included. It is installed and running on the iPad; nobody has
   reported on it there yet.
@@ -799,6 +801,61 @@ step 3 held and DECAY turned 15 paced steps, LED 34 is lit while the step
 is held and dark once it is let go. The app draws the lens where the plate
 has it. [O] What Aileen did when they stayed dark, and whether they were
 expected at another time.
+
+## The app read the screen one frame late (2026-10-08, PC)
+
+**[C]** SETTINGS is not refused, and nothing in the machine gates its
+release. The menu opens on every tap; the app did not show it. The cause
+is which buffer the app read.
+
+The firmware keeps two frame buffers and two pointers to them, at
+0x401492f0 and 0x401492f4. The window manager draws every view into the
+buffer the first pointer names; the routine at 0x4008e622 then sends the
+display each 8-byte run that differs from the buffer the second names, and
+swaps the two pointers (0x4008e698 to 0x4008e6ae). `emu/panel.py`
+describes the same pair on the Digitakt: after the swap the second pointer
+names what the panel shows and the first the buffer drawn into next. The
+Python window takes the first buffer at the routine's entry, before the
+swap. The app polled the first pointer between runs, after the swap, so it
+always showed the frame before the one on the display.
+
+On the main screen that is not seen, because a timer redraws it every
+third UI tick (about 103 ms while stopped). A menu is drawn once when it
+opens and then only when something in it changes, so its one frame stayed
+in the buffer the app was not reading. The 40 ms window was the one tick in
+three when a redraw of the main screen was already owed: the window
+manager then drew twice, once as the menu opened (0x40076ffa) and once at
+the next tick, and the second draw put the menu in both buffers.
+
+Measured with `cfpoke` on `cycles-play.start`, without the translated
+blocks, reading the pointer at 0x401492f4 0.25 s after the release:
+
+| | Menu shown, 0x401492f0 | Menu shown, 0x401492f4 |
+| --- | --- | --- |
+| Stopped, 5 press times by 10 holds of 0.02 to 0.20 s | 20 of 50 (the Mac's table; 12 of 30 here) | 50 of 50 |
+| Playing, 14 press times from 0.20 to 0.98 s, hold 0.1 s | not run here (the Mac: 1 of 40 press times) | 14 of 14 |
+
+The same lag very likely explains PUSH as Aileen described it, to be
+confirmed on the device. The app's PUSH is a plain key (`Panel.pushKey`)
+and sends no turn, so a click cannot turn the knob. In the menu, after
+eight paced steps of LEVEL/DATA and a PUSH click, the buffer at 0x401492f0
+still held the frame from before the click and the one at 0x401492f4 the
+frame after it: every change drawn once showed one input late.
+
+The change is one constant, `screenPointer` in
+`native/ios/Cycles/Engine.swift`. The buffer it now names is not drawn
+into, so the frame is also never torn. Not built or run on a device yet.
+[O] The knob lights: not looked at again; they are LEDs, not the screen,
+so this does not account for them.
+
+Checked again on the pointer at 0x401492f4, and unchanged: a PUSH tap on
+the main screen changes nothing; SETTINGS held shows another screen from
+about 1.0 s until it is let go; DECAY turned a detent at a time, 0.5 s or
+16 ms apart, first changes the screen on the fifth detent. The main
+screen is redrawn ten times a second, so both buffers agree there once it
+has settled, and the encoder notes above stand. On the device every value
+drawn once did show one step late, so how the knobs felt there was judged
+through that.
 
 ## What the Python side did per second (the scope that was ported)
 

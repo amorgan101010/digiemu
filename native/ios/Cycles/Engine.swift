@@ -12,10 +12,14 @@
 import AVFoundation
 import SwiftUI
 
-/// Model:Cycles OS 1.13 on this core's clock (docs/MODEL-CYCLES-IPAD-PLAN.md),
-/// and where its display's frame-buffer pointer is (MODELS.md).
+/// Model:Cycles OS 1.13 on this core's clock (docs/MODEL-CYCLES-IPAD-PLAN.md).
 let instructionsPerSecond: Int64 = 211_700_000
-let screenPointer: UInt32 = 0x4014_92f0
+/// The pointer to the frame the display is showing. The firmware keeps two
+/// buffers: it draws into the one the pointer at 0x401492f0 names, sends what
+/// changed to the display and swaps the two pointers (emu/panel.py). So the
+/// second pointer names the frame last sent, whole; the first names the one
+/// before it, which the next draw writes over.
+let screenPointer: UInt32 = 0x4014_92f4
 
 let screenWidth = 128, screenHeight = 64
 
