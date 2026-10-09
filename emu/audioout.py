@@ -357,6 +357,7 @@ class _AudioQueueOut:
 PA_SAMPLE_S16LE = 3
 PA_STREAM_PLAYBACK = 1
 PA_DEFAULT = 0xFFFFFFFF
+PA_USEC_INVALID = 0xFFFFFFFFFFFFFFFF    # pa_simple_get_latency's failure
 
 
 class _PaSampleSpec(ctypes.Structure):
@@ -380,16 +381,24 @@ class _PulseOut:
     blocks, so a writer thread feeds the server from a queue of at most
     `buffers` blocks; write() never waits on it, and a block that finds the
     queue full is dropped, as with the other backends. The server is asked
-    to hold only a few blocks (tlength, at least two PipeWire quanta), so
-    queued() -- the blocks still here plus the one being written -- reaches
-    0 soon after the stream really runs dry. Only the writer thread touches
-    the pa_simple handle.
+    to hold only a little (tlength: two blocks, and at least 1024 frames,
+    which is two quanta of a 512-frame PipeWire graph), and queued() counts
+    that with the blocks still here, so it reaches 0 soon after the stream
+    really runs dry. Only the writer thread touches the pa_simple handle.
+
+    A write that fails (the server went away: PipeWire was restarted) ends
+    the connection. Until the writer thread has a new one, which it tries
+    for every RETRY_S, blocks are dropped and queued() is 0.
 
     DIGIEMU_PULSE_MS overrides the server buffer (tlength) in milliseconds.
-    close() prints how low the server's buffer ran (pa_simple_get_latency
-    after each write), which is where a crackle this side of the server
-    shows up.
+    After a session that dropped blocks, lost the server or found the
+    server's buffer under one block, close() prints how low that buffer ran
+    (pa_simple_get_latency after each write, which counts the device's own
+    latency too): it is where a crackle this side of the server shows up.
     """
+
+    RETRY_S = 1.0           # between tries for a new connection
+    CLOSE_WAIT_S = 1.0      # how long close() waits for a write to return
 
     def __init__(self, rate=48000, channels=2, buffers=16, block_ms=20):
         path = ctypes.util.find_library('pulse-simple') or 'libpulse-simple.so.0'
@@ -423,8 +432,10 @@ class _PulseOut:
         self.buffers = buffers
         self.dropped = 0
         self.played = 0
+        self.lost = 0               # connections ended by a failed write
         self._pending = bytearray()
-        spec = _PaSampleSpec(PA_SAMPLE_S16LE, rate, channels)
+        self._strerror = pa.pa_strerror
+        self._spec = _PaSampleSpec(PA_SAMPLE_S16LE, rate, channels)
         # 1024 frames (~21 ms): two quanta of a 512-frame PipeWire graph.
         # On a graph floored at 1024 that is one quantum, which underruns
         # whenever the graph pulls late: set DIGIEMU_PULSE_MS=43 there.
@@ -438,39 +449,62 @@ class _PulseOut:
         self._lat_min = None        # lowest server latency seen, us
         self._lat_low = 0           # writes that found it under one block
         self._lat_n = 0
-        attr = _PaBufferAttr(PA_DEFAULT, self._tlength, PA_DEFAULT,
-                             PA_DEFAULT, PA_DEFAULT)
-        err = ctypes.c_int(0)
-        self._pa = lib.pa_simple_new(None, b'digiemu', PA_STREAM_PLAYBACK,
-                                     None, b'playback', ctypes.byref(spec),
-                                     None, ctypes.byref(attr),
-                                     ctypes.byref(err))
-        if not self._pa:
-            raise OSError('pa_simple_new failed: %s'
-                          % pa.pa_strerror(err.value).decode(errors='replace'))
+        self._attr = _PaBufferAttr(PA_DEFAULT, self._tlength, PA_DEFAULT,
+                                   PA_DEFAULT, PA_DEFAULT)
+        self._pa = self._connect()
         self._queue = []
         self._busy = False
         self._server = (0, 0.0)     # (latency us, when) after the last write
         self._closing = False
+        self._closed = False
+        self._exited = False        # the writer thread has returned
+        self._abandoned = False     # close() did not wait for it
         self._cond = threading.Condition()
         self._thread = threading.Thread(target=self._writer, daemon=True,
                                         name='digiemu-pulse')
         self._thread.start()
 
+    def _why(self, err):
+        return (self._strerror(err.value) or b'?').decode(errors='replace')
+
+    def _connect(self):
+        """-> a new pa_simple playback stream, or OSError."""
+        err = ctypes.c_int(0)
+        pa = self._lib.pa_simple_new(None, b'digiemu', PA_STREAM_PLAYBACK,
+                                     None, b'playback',
+                                     ctypes.byref(self._spec), None,
+                                     ctypes.byref(self._attr),
+                                     ctypes.byref(err))
+        if not pa:
+            raise OSError('pa_simple_new failed: %s' % self._why(err))
+        return pa
+
     def _writer(self):
         err = ctypes.c_int(0)
         while True:
             with self._cond:
-                while not self._queue and not self._closing:
+                while self._pa and not self._queue and not self._closing:
                     self._cond.wait()
                 if self._closing:
+                    self._exited = True
+                    if self._abandoned:     # close() gave up waiting
+                        self._free()
                     return
-                chunk = self._queue.pop(0)
-                self._busy = True
-            self._lib.pa_simple_write(self._pa, chunk, len(chunk),
-                                      ctypes.byref(err))
-            lat = self._lib.pa_simple_get_latency(self._pa, ctypes.byref(err))
-            if self._lat_n > 10:        # past the stream's start-up
+                pa = self._pa
+                if pa:
+                    chunk = self._queue.pop(0)
+                    self._busy = True
+            if not pa:
+                self._reconnect()
+                continue
+            if self._lib.pa_simple_write(pa, chunk, len(chunk),
+                                         ctypes.byref(err)) < 0:
+                self._disconnect(pa, err)
+                continue
+            lat = self._lib.pa_simple_get_latency(pa, ctypes.byref(err))
+            if lat == PA_USEC_INVALID:
+                lat = 0
+            elif self._lat_n > 10:      # past the stream's start-up
                 if self._lat_min is None or lat < self._lat_min:
                     self._lat_min = lat
                 if lat * self.rate * self.frame < self.block * 1_000_000:
@@ -481,6 +515,51 @@ class _PulseOut:
                 self._server = (lat, time.monotonic())
                 self._cond.notify_all()
 
+    def _disconnect(self, pa, err):
+        """A write failed: free the connection and count what it held as
+        dropped (writer thread)."""
+        print('[audio] pulse: write failed (%s); trying for a new connection '
+              'every %g s' % (self._why(err), self.RETRY_S), flush=True)
+        self._lib.pa_simple_free(pa)
+        with self._cond:
+            gone = len(self._queue) + 1
+            self._queue.clear()
+            self.played -= gone
+            self.dropped += gone
+            self.lost += 1
+            self._pa = None
+            self._busy = False
+            self._server = (0, 0.0)
+            self._cond.notify_all()
+
+    def _reconnect(self):
+        """Wait RETRY_S, or until close(), then try once for a new
+        connection (writer thread)."""
+        with self._cond:
+            if self._cond.wait_for(lambda: self._closing, self.RETRY_S):
+                return
+        try:
+            pa = self._connect()
+        except OSError:
+            return
+        with self._cond:
+            self._pa = pa
+            if self._closing:
+                return
+        print('[audio] pulse: connected again', flush=True)
+
+    def _server_left(self):
+        """Seconds of ours the server still holds: what it reported at the
+        last write, less the time since. The report counts the device's own
+        latency too (a Bluetooth sink adds a tenth of a second or more), so
+        it is held to tlength, the most of ours the server keeps: without
+        that a stream that ran dry would not look dry until the device's
+        latency had passed as well."""
+        with self._cond:
+            lat_us, at = self._server
+        held = min(lat_us / 1e6, self._tlength / (self.rate * self.frame))
+        return held - (time.monotonic() - at)
+
     def queued(self):
         """Blocks handed to the device and not yet played: the ones still
         here, and what the server held at the last write, counted down in
@@ -489,8 +568,7 @@ class _PulseOut:
         queued a second cushion on top of it -- as latency."""
         with self._cond:
             n = len(self._queue) + self._busy
-            lat_us, at = self._server
-        left = lat_us / 1e6 - (time.monotonic() - at)
+        left = self._server_left()
         if left > 0:
             n += int(left * self.rate * self.frame // self.block)
         return n
@@ -508,18 +586,19 @@ class _PulseOut:
     def _submit(self, chunk, block, abort):
         """Queue one full block. -> False if abandoned (abort)."""
         with self._cond:
-            while len(self._queue) >= self.buffers and block:
+            while (len(self._queue) >= self.buffers and block
+                   and self._pa and not self._closing):
                 if abort is not None and abort():
                     return False
                 self._cond.wait(0.005)
             if self._closing:
                 return False
-            if len(self._queue) >= self.buffers:
+            if not self._pa or len(self._queue) >= self.buffers:
                 self.dropped += 1
                 return True
             self._queue.append(chunk)
+            self.played += 1
             self._cond.notify_all()
-        self.played += 1
         return True
 
     def drain(self, abort=None):
@@ -528,35 +607,45 @@ class _PulseOut:
             tail = bytes(self._pending).ljust(self.block, b'\0')
             self._pending = bytearray()
             self._submit(tail, True, abort)
-        while self.queued():
-            if abort is not None and abort():
-                return
-            time.sleep(0.005)
-        # What the server still holds: at most tlength.
-        end = time.monotonic() + self._tlength / (self.rate * self.frame)
-        while time.monotonic() < end:
+        # queued() counts whole blocks: wait out the server's last part too.
+        while self.queued() or self._server_left() > 0:
             if abort is not None and abort():
                 return
             time.sleep(0.005)
 
     def close(self):
-        if self._pa is None:
+        if self._closed:
             return
+        self._closed = True
         with self._cond:
             self._closing = True
             self._queue.clear()
             self._cond.notify_all()
-        self._thread.join()
-        if self._lat_n > 10:
+        self._thread.join(self.CLOSE_WAIT_S)
+        with self._cond:
+            if not self._exited:
+                # A call that has not come back: the server stopped
+                # answering. Freeing the connection under it is not safe,
+                # so the writer thread (a daemon) frees it if it returns.
+                self._abandoned = True
+                print('[audio] pulse: the server is not answering; closed '
+                      'without it', flush=True)
+                return
+        if self.dropped or self.lost or self._lat_low:
             print('[audio] pulse: tlength %d ms, %d writes, server buffer '
-                  'low %.1f ms, under one block %d times, dropped %d'
+                  'low %.1f ms, under one block %d times, dropped %d, '
+                  'server lost %d times'
                   % (self._tlength * 1000 // (self.rate * self.frame),
                      self._lat_n, (self._lat_min or 0) / 1000,
-                     self._lat_low, self.dropped), flush=True)
-        err = ctypes.c_int(0)
-        self._lib.pa_simple_flush(self._pa, ctypes.byref(err))
-        self._lib.pa_simple_free(self._pa)
-        self._pa = None
+                     self._lat_low, self.dropped, self.lost), flush=True)
+        self._free()
+
+    def _free(self):
+        if self._pa:
+            err = ctypes.c_int(0)
+            self._lib.pa_simple_flush(self._pa, ctypes.byref(err))
+            self._lib.pa_simple_free(self._pa)
+            self._pa = None
 
 
 class WaveOut:
