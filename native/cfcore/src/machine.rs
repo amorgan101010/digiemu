@@ -152,6 +152,31 @@ pub fn write_saved(path: &str, data: &[u8]) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("{path}: {e}"))
 }
 
+/// Whether the code in `m` is the code this build's translated blocks were
+/// made from. Blocks are found by address alone, so over another firmware
+/// they would run in place of whatever is there.
+pub(crate) fn blocks_fit(m: &Mem) -> Result<(), String> {
+    if aot::BLOCKS == 0 {
+        return Ok(());
+    }
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut code = Vec::new();
+    for &(addr, len) in aot::SPANS.iter() {
+        if !m.is_mapped(addr) || !m.is_mapped(addr + len - 1) {
+            return Err("this machine has no code where this build's translated blocks are".into());
+        }
+        code.resize(len as usize, 0);
+        m.read_bytes(addr, &mut code);
+        for b in &code {
+            hash = (hash ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    if hash != aot::CODE_HASH {
+        return Err("this machine runs another firmware than this build's translated blocks are for".into());
+    }
+    Ok(())
+}
+
 /// Panel input due at an instruction count: 0 key, 1 pad, 2 turn.
 #[derive(Clone, Copy, Debug)]
 pub struct Input {
@@ -264,6 +289,7 @@ impl Machine {
             }
         }
 
+        blocks_fit(&m)?;
         Ok(Machine::assemble(c, m, d, ips, inputs))
     }
 

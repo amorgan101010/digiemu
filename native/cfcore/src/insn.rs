@@ -279,7 +279,8 @@ fn dec(f: &mut Fetch, op: u16, pc: u32) -> Option<Insn> {
             }
         }
         0x4 => {
-            if op & 0xf1c0 == 0x41c0 {
+            // EXTB.L has LEA's bits with a data register for the address.
+            if op & 0xf1c0 == 0x41c0 && op & 0xfff8 != 0x49c0 {
                 return Some(Lea(control(f, mode, reg)?, r9));
             }
             match op & 0xfff8 {

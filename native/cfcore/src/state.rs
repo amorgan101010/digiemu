@@ -668,6 +668,7 @@ impl Machine {
         if c.halted != 0 {
             return Err("saved machine had stopped".into());
         }
+        crate::machine::blocks_fit(&m)?;
         let mut k = Machine::assemble(c, m, d, ips, inputs);
         k.now = now;
         k.steps = steps;

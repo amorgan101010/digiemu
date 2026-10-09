@@ -4,6 +4,8 @@
 use std::{env, fs, path::PathBuf};
 
 const STUB: &str = "pub const BLOCKS: usize = 0;\n\
+pub const CODE_HASH: u64 = 0;\n\
+pub static SPANS: [(u32, u32); 0] = [];\n\
 pub fn has(_pc: u32) -> bool { false }\n\
 pub fn run(_cpu: &mut Cpu, _m: &mut Mem, _budget: &mut i64) {}\n";
 

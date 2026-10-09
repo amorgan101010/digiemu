@@ -914,6 +914,74 @@ run). [O] The Python emulator was not run beside it: the check is that
 the firmware reads back what it wrote, not that the two models agree
 command for command.
 
+## A modified Model:Cycles firmware (2026-10-09, PC)
+
+Aileen downloaded a community-modified Model:Cycles OS 1.13 (sha256
+d86497ea...; it adds machines, sample preview and a boot animation) and
+asked whether the app could run it. Its main OS section is the stock one
+with 4,122 bytes changed in 165 places and about 330 KB added after it
+(2,075,152 bytes against 1,744,192). The DSP section, the LED table at
+0x4010abfc, the key table at 0x4010aef8, the two screen pointers,
+`panel_diff`, `sem_pend` and `sd_flag` are the same as stock's.
+
+Everything made from it is firmware-derived and stays out of the tree:
+`portable/firmware/mc-1.13-d86497ea/` and `out/cfcore/custom/`.
+
+- **Python emulator.** `emu.portable` takes it as an untested build of
+  the Cycles (`plan_add`, `prepare_folder`, `--worker first-run`): it
+  boots, formats its card and settles on the main screen.
+- **Recording.** `tools/record.py`, 24,000 steps: 3.011 s playing, with
+  the recorder's panel input, 445 MB, nothing odd reported.
+- **[C] EXTB.L was not decoded.** `cfreplay` stopped at 0x401b71c2
+  (`49c0`, in the added code): the decoder tried LEA first, which has the
+  same bits with a data register for the address. Fixed in
+  `src/insn.rs`. Stock never ran one in its recording.
+- **Replay.** All 24,000 step states, 610,590 host reads, 31,062
+  exception entries, the final memory and the audio match, on the
+  interpreter and with 4,456 translated blocks (1.98% of instructions
+  interpreted in a 20 s run).
+- **[C] It does not need its own clock.** The recording ran 170.9M real
+  instructions a second against stock's 211.7M, and this note first said
+  it needed `--ips 170900000`. That figure is how many instructions the
+  Python emulator's clock happened to cover in this recording, not
+  something the firmware asks for: Aileen pointed out that it is made for
+  the same hardware. At 211,700,000 it runs the same (0.244 s per emulated
+  second, 52.5% of the time idle against 41.1%), and the audio follows the
+  recording a little more closely (correlation 0.9918 against 0.9801). The
+  app keeps its one rate.
+- **Speed here** (Ryzen 5600G): 0.248 s per emulated second over 20 s,
+  against stock's 0.21 to 0.22. By that ratio the iPad's 3.4x would be
+  about 2.9x. Not measured on a device.
+- The start file with its card is `out/cfcore/custom/play-card.start`
+  (`cfstart --card`, the same `--sd-flag`). The main screen and the Config
+  menu come up in `cfpoke`.
+
+Aileen's decision: the app runs this firmware in place of stock.
+
+- **The blocks check their firmware.** `cfgen` now writes, with the
+  blocks, the spans of the image they were made from and a hash of those
+  bytes (`CODE_HASH`, `SPANS`); a machine made from a starting state or
+  restored from a saved one is refused if its memory there hashes
+  otherwise (`machine::blocks_fit`). So a kept stock machine is not run
+  with this firmware's blocks: the app sets it aside as `cycles.save.bad`
+  and starts from the bundled state. A build without blocks checks
+  nothing. An `aot_gen.rs` from before this does not compile.
+- **For the Mac**, in `out/cfcore/for-mac/` here: `aot_gen.rs` and
+  `cycles-play.start` (with the card), to copy over the Mac's
+  `out/cfcore/aot_gen.rs` and `out/cfcore/cycles-play.start` before
+  `native/ios/build.sh`.
+
+Checked on the build with this firmware's blocks: its starting state and
+a machine saved from it open and run (1 s + 1 s through a save); stock's
+starting state and a saved stock machine are both refused with "this
+machine runs another firmware than this build's translated blocks are
+for". A project save to slot 03 ends in "Save OK" (138 commands, as on
+stock), and the MACHINE list has fourteen entries, among them Sample,
+SYBit and SYSwm, which stock does not have.
+
+[O] The added machines were listed, not played; sample preview and the
+boot animation were not tried. [O] Not built for or run on a device.
+
 ## What the Python side did per second (the scope that was ported)
 
 Counted before the port, for the playing Cycles, per emulated second at
