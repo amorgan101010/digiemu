@@ -15,6 +15,8 @@
 //!     screen AT      print the screen the pointer at hex AT names
 //!     peek AT N      print N bytes of guest memory at hex AT
 //!     frames         print the panel's scan frames so far and the time
+//!     listen S       run S seconds and print the output's peak level each 50 ms (silent)
+//!     wav FILE S     run S seconds and write what was played as a WAV file
 //!     save FILE      write the whole machine, to open as IN later
 //!     card           print what the +Drive has done and holds
 //!     cardout FILE   write the +Drive as a raw image, up to its last sector in use
@@ -78,6 +80,40 @@ fn main() {
                     last = now;
                 }
                 println!("changed: {} | lit at the end: {}", lit(seen), lit(last));
+            }
+            "listen" => {
+                let s = num(&mut it);
+                let mut levels = Vec::new();
+                for _ in 0..(s * 20.0) as usize {
+                    let mut part = Vec::new();
+                    if let Err(e) = b.advance(2400, &mut part) {
+                        eprintln!("STOPPED: {e}");
+                        std::process::exit(1);
+                    }
+                    let peak = part.iter().fold(0f32, |m, v| m.max(v.abs()));
+                    levels.push(format!("{:.0}", peak * 100.0));
+                }
+                println!("peak %: {}", levels.join(" "));
+            }
+            "wav" => {
+                let out = it.next().expect("FILE").clone();
+                let s = num(&mut it);
+                let mut part = Vec::new();
+                if let Err(e) = b.advance((s * 48_000.0) as usize, &mut part) {
+                    eprintln!("STOPPED: {e}");
+                    std::process::exit(1);
+                }
+                let data: Vec<u8> = part.iter().flat_map(|v| ((v.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).collect();
+                let mut f = b"RIFF".to_vec();
+                f.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+                f.extend_from_slice(b"WAVEfmt ");
+                for v in [16u32, 0x0002_0001, 48_000, 192_000, 0x0010_0004] {
+                    f.extend_from_slice(&v.to_le_bytes());
+                }
+                f.extend_from_slice(b"data");
+                f.extend_from_slice(&(data.len() as u32).to_le_bytes());
+                f.extend_from_slice(&data);
+                std::fs::write(out, f).unwrap();
             }
             "save" => {
                 let out = it.next().expect("FILE");

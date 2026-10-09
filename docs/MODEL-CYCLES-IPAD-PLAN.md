@@ -1034,6 +1034,63 @@ installed with the same firmware and was not run).
   Python-made state" below, and it would also make an install harmless.
   [O] Not started.
 
+## Samples on the modified firmware (2026-10-09, PC)
+
+The modification adds a Sample machine. Whether it plays samples from the
++Drive was checked here, silently (the output was measured, not played).
+
+- Three test files made here (0.5 s, 48 kHz, mono: a decaying 440 Hz
+  tone, a falling sweep, a noise burst) were put in the card's /incoming
+  with `emu.samples.plan` and `write`, the snapshots rebuilt
+  (`--worker first-run FWDIR --rebuild`, since the firmware indexes the
+  card at its cold boot), a new recording made and a starting state cut
+  with `cfstart --card`: 8,625 sectors in use.
+- **The way in is FUNCTION + MACHINE** with the Sample machine on the
+  track (MACHINE, six turns from Kick, PUSH). A browser opens: Root, with
+  FACTORY and INCOMING; INCOMING lists NOISE, SWEEP and TONE440; PUSH
+  loads one ("Sample loaded to track 1").
+- **[C] Two things the core lacked**, both met on the way:
+  - CPUSHL (`f468`, at 0x4008b2d8 in the card read path) was not
+    decoded. The Mac met it first, on the iPad, and fixed it (above);
+    it was met here the same way before that commit was seen. The
+    project load on stock had not gone that way.
+  - Loading a sample stopped the machine at "access to unmapped
+    0x4a800000". The Python emulator maps a zeroed megabyte the first
+    time the firmware touches one (`emu/harness.py`, `_fault`); the
+    native machine had only the megabytes its starting state came with.
+    A megabyte of the SDRAM window (0x40000000 to 0x80000000) is now
+    mapped as zeroed RAM on its first access (`Mem::fresh_ram`), and the
+    card's DMA may write to one. An address outside the window still
+    stops the machine. The Python Cycles does not alias its 128 MB
+    across the window in an ordinary run, and neither does this.
+- **Each sample plays.** With the machine stopped, pad T1 (ADC channel
+  5; channel 0 is T6) at velocity 110, 0.6 s of output:
+
+  | Loaded | Peak (of 32767) | What came out |
+  | --- | --- | --- |
+  | NOISE | 7070 | noise (spectral flatness 0.85), gone in 0.4 s as the file is |
+  | SWEEP | 6559 | a tone, strongest at 180 Hz, flatness 0.02 |
+  | TONE440 | 6560 | a tone, strongest at 310 Hz, flatness 0.01 |
+
+  [O] The tone is at 310 Hz, not the file's 440: 0.705 of it, six
+  semitones down. Not explained: the machine's own tuning on this track,
+  or the rate the loader stores, were not looked at. The outputs do not
+  correlate with the files sample for sample (at most 0.18), which the
+  machine's envelope, filter and pitch would account for; that was not
+  taken apart either.
+
+`cfpoke` gained `listen S` (the output's peak each 50 ms) and
+`wav FILE S` for this.
+
+On the build with the translated blocks the output for NOISE and for
+TONE440 is byte for byte the interpreter build's, and a machine saved
+with a sample loaded plays it when opened again. The starting state in
+`out/cfcore/for-mac/` is now this one, with the three test files.
+
+[O] On a device. [O] The card is
+still whole inside every saved machine: fine at 4.4 MB, not at a real
+pack's size. [O] Loading samples from the device itself.
+
 ## What the Python side did per second (the scope that was ported)
 
 Counted before the port, for the playing Cycles, per emulated second at

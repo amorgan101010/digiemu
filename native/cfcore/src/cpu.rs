@@ -78,6 +78,9 @@ pub trait Bus {
     fn access(&mut self, m: &mut Mem, write: bool, addr: u32, size: u32, value: u32);
 }
 
+/// The addresses the DDR controller decodes (MCF54418RM Table 1-2).
+pub const SDRAM_WINDOW: std::ops::Range<u32> = 0x4000_0000..0x8000_0000;
+
 /// Guest memory as 1 MB chunks behind a table of host pointers, each entry
 /// already offset by its guest base. RAM is in `table` and is accessed
 /// inline. Device megabytes are in `devices`: also plain memory, but every
@@ -212,10 +215,26 @@ impl Mem {
         }
     }
 
+    /// The firmware reached a megabyte of the SDRAM window that nothing has
+    /// touched yet: it becomes zeroed RAM, as digiemu maps a page on its
+    /// first access (`emu/harness.py`, `_fault`). -> whether it did.
+    fn fresh_ram(&mut self, addr: u32, size: u32) -> bool {
+        let last = addr.wrapping_add(size.max(1) - 1);
+        if !SDRAM_WINDOW.contains(&addr) || !SDRAM_WINDOW.contains(&last) {
+            return false;
+        }
+        self.map(addr);
+        self.map(last);
+        true
+    }
+
     #[cold]
     #[inline(never)]
     fn slow_read(&mut self, addr: u32, size: u32) -> u32 {
         if self.devices[(addr >> CHUNK_BITS) as usize].is_null() {
+            if self.fresh_ram(addr, size) {
+                return 0;
+            }
             if self.fault == 0 {
                 self.fault = addr as u64 + 1;
             }
@@ -234,6 +253,11 @@ impl Mem {
     #[inline(never)]
     fn slow_write(&mut self, addr: u32, size: u32, v: u32) {
         if self.devices[(addr >> CHUNK_BITS) as usize].is_null() {
+            if self.fresh_ram(addr, size) {
+                let b = v.to_be_bytes();
+                self.write_bytes(addr, &b[4 - size as usize..]);
+                return;
+            }
             if self.fault == 0 {
                 self.fault = addr as u64 + 1;
             }

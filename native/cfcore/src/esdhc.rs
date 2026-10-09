@@ -202,7 +202,8 @@ fn there(h: &mut dyn Host, addr: u32, len: u64) -> bool {
     let Some(last) = (addr as u64).checked_add(len.max(1) - 1).filter(|l| *l <= u32::MAX as u64) else {
         return false;
     };
-    (addr >> 20..=(last as u32) >> 20).all(|mb| h.mapped(mb << 20))
+    // A megabyte of SDRAM nothing has touched yet becomes RAM when written.
+    (addr >> 20..=(last as u32) >> 20).all(|mb| h.mapped(mb << 20) || crate::cpu::SDRAM_WINDOW.contains(&(mb << 20)))
 }
 
 impl Esdhc {
