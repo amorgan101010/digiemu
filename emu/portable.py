@@ -433,15 +433,17 @@ def _fwcheck():
 
 
 def _panel_module(name='emu.dtpanel'):
-    """-> the panel module PANELS names (emu.dtpanel, emu.dnpanel), looked
-    up in sys.modules first like the others. The imports are spelled out,
-    not importlib'd, so the packaging scan (tests/test_packaging.py) sees
-    both and the bundle carries them."""
+    """-> the panel module PANELS names (emu.dtpanel, emu.dnpanel,
+    emu.mdpanel), looked up in sys.modules first like the others. The
+    imports are spelled out, not importlib'd, so the packaging scan
+    (tests/test_packaging.py) sees all three and the bundle carries them."""
     mod = sys.modules.get(name)
     if mod is not None:
         return mod
     if name == 'emu.dnpanel':
         from emu import dnpanel as mod
+    elif name == 'emu.mdpanel':
+        from emu import mdpanel as mod
     elif name == 'emu.dtpanel':
         from emu import dtpanel as mod
     else:
@@ -1713,10 +1715,10 @@ def _marked_incompatible(state, snap):
 
 
 def _run_panel(paths, b, snap, log, module='emu.dtpanel'):
-    """Run the device's panel (`module`, from PANELS: emu.dtpanel or
-    emu.dnpanel, which share main()'s arguments and codes) on `snap`, then
-    record in firmware.json what the session left behind. -> (the panel's
-    return code, incompatible?).
+    """Run the device's panel (`module`, from PANELS: emu.dtpanel,
+    emu.dnpanel or emu.mdpanel, which share main()'s arguments and codes) on
+    `snap`, then record in firmware.json what the session left behind.
+    -> (the panel's return code, incompatible?).
 
     'resume' is the card stamp resume.snap was saved against:
       - a clean exit that wrote resume.snap: the card as it is now;
