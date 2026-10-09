@@ -22,7 +22,9 @@ Shift, "clear latched" or Escape releases them all.
 
 KEYBOARD. The computer keyboard plays the panel too, on the Monomachine /
 Machinedrum layout Gearmulator uses: see emu/panelkeys.py. Ctrl is FUNC,
-Shift latches until it is let go, Delete releases everything.
+Shift latches until it is let go, Delete releases everything. A Keychron
+with per-key lights shows the keymap while the window has the focus
+(emu/keylight.py).
 
 AUDIO. With the accelerated Unicorn (patches/README.md) the firmware's
 render runs faster than real time and plays LIVE (MUTE silences it). Without
@@ -77,7 +79,7 @@ import sys
 import time
 import tkinter as tk
 
-from emu import (audioout, config, controlin, panelkeys, remote, panellayout,
+from emu import (audioout, config, controlin, keylight, panelkeys, remote, panellayout,
                  panelskin)
 from emu.gui import Emulator, H, W
 
@@ -271,6 +273,11 @@ class DigitaktPanel(tk.Tk):
         self.bind('<KeyRelease>', lambda e: self._key(e, False))
         self.bind('<FocusOut>',
                   lambda _e: self.after_idle(self._focus_check))
+        # A keyboard with per-key lights shows the keymap while the window
+        # has the focus (emu/keylight.py).
+        self.keylight = keylight.KeyLight()
+        self.bind('<FocusIn>',
+                  lambda _e: self.keylight.show(self.KEYS, self.KNOB_KEYS))
 
         # Closing the window has to stop the worker BEFORE the interpreter
         # tears down. The worker sits inside uc_emu_start; if the main thread
@@ -947,6 +954,7 @@ class DigitaktPanel(tk.Tk):
             here = False
         if not here:
             self.keyboard.focus_lost()
+            self.keylight.restore()
 
     def _drag_start(self, code, event):
         self._drag_y = event.y
@@ -1202,6 +1210,9 @@ class DigitaktPanel(tk.Tk):
         player = getattr(self, 'player', None)
         if player is not None:
             player.stop()
+        lights = getattr(self, 'keylight', None)
+        if lights is not None:
+            lights.restore()
         server, self.remote = getattr(self, 'remote', None), None
         if server is not None:
             server.stop()
