@@ -212,7 +212,8 @@ given PC. [MODELS.md](MODELS.md) covers what the Models add.
 You need Python 3.12 (with [uv](https://docs.astral.sh/uv/)), a C toolchain
 to build the patched Unicorn engine ([docs/UNICORN.md](docs/UNICORN.md)), and
 your own `.syx`. Tested on Windows 11 and on Linux (WSL2, and Arch with
-PipeWire, where live audio goes through PulseAudio's API).
+PipeWire). Live audio on Linux goes through PulseAudio's API and has been
+run on Arch only.
 
 ```sh
 uv sync
