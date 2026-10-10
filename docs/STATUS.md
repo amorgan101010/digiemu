@@ -111,6 +111,15 @@ Model:Samples OS 1.13, SHA-256
   and picked by name, and the choice comes back on the next start. MIDI
   data in and out through a device, and a round trip through a loopback
   port, have not been tested on Windows yet.
+- **Linux, from source:** live audio goes through PulseAudio, or PipeWire's
+  pipewire-pulse (`libpulse-simple` through ctypes, `emu/audioout.py`).
+  Run on Arch with PipeWire. `DIGIEMU_PULSE_MS` sets the buffer asked of
+  the server (two blocks and at least 1024 frames: 21 ms for the panel's
+  live audio, 40 ms for a replay): raise it if the graph's quantum is that
+  long. If the server goes away the output looks for it again every second.
+  Not run on WSL2: without this the panel says "no output device" there,
+  and with it live audio and replays go to WSLg's PulseAudio server if
+  there is one. Not run with PulseAudio itself either.
 - **The app is unsigned**, and its Control Flow Guard flag is cleared,
   because Unicorn's `longjmp` fails under it.
 - **Digitone Keys.** The OS file is shared, but digiemu runs it as a plain
