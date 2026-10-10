@@ -216,12 +216,27 @@ class DigitaktPanel(tk.Tk):
     LEGEND = AMBER
     SCREEN_LEGEND = '8 Voice Digital Drum Computer & Sampler'
 
+    def _window_icon(self, slug):
+        """The product's icon for the taskbar, in each size drawn
+        (emu/assets/icons). Without the files: Tk's own."""
+        folder = panelskin.ROOT.parent / 'icons'
+        try:
+            self._icons = [tk.PhotoImage(master=self, file=str(path))
+                           for path in sorted(folder.glob(slug + '-*.png'))]
+            if self._icons:
+                self.iconphoto(True, *self._icons)
+        except tk.TclError:
+            self._icons = []
+
     def __init__(self, snapshot, syx=None, audio=True, save_on_exit=None,
                  app=False):
-        super().__init__()
+        # A window class per product, so a taskbar can tell them apart.
+        slug = self.PRODUCT.lower().replace(':', '-')
+        super().__init__(className=slug)
         self.app = app                   # run by the portable app
         self.samples_added = []          # names LOAD SAMPLES wrote
         self.title(self.TITLE)
+        self._window_icon(slug)
         self.configure(bg=BG)
         self.canvas = tk.Canvas(self, width=self.PANEL_W,
                                 height=self.PANEL_H, bg=BG,
