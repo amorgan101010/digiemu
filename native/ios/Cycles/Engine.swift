@@ -214,7 +214,7 @@ final class Engine: ObservableObject {
                     let why = String(cString: cfcore_error())
                     // Two seconds of sound from a kept machine before it
                     // stops: start from the bundled state instead.
-                    if fromKept, played < 96_000, let fresh = cfcore_open(path, instructionsPerSecond) {
+                    if fromKept, played < 96_000, let fresh = cfcore_open_card(path, card, instructionsPerSecond) {
                         try? FileManager.default.removeItem(atPath: kept + ".bad")
                         try? FileManager.default.moveItem(atPath: kept, toPath: kept + ".bad")
                         cfcore_close(bench)

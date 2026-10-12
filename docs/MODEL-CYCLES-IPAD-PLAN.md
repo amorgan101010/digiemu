@@ -1162,6 +1162,57 @@ For the Mac, `out/cfcore/for-mac/` now has three files: `aot_gen.rs`
 (unchanged), `cycles-play.start` and `cycles-play.card`, all to go in the
 Mac's `out/cfcore/`.
 
+## A second modified firmware, staged for the Mac (2026-10-11, PC)
+
+Aileen made a newer build of the modified Model:Cycles OS 1.13 (sha256
+5a8f6095...; over the earlier one it adds a multi-line browser, level and
+pan values, dimmed trigless steps, more LFO and a macro) and wants the
+app to run it with the same samples. Its main OS section is 2,073,997
+bytes: against stock, 8,096 bytes changed in 257 places below stock's
+end. The DSP section, the LED table, the key table and `panel_diff` are
+stock's bytes, and the two screen pointers and `sd_flag` are referenced
+as often as in stock (9, 7 and 8 times), so the app's one hard-coded
+address and `--sd-flag 40fdd590` stand.
+
+Made the same way as the first, in `portable/firmware/mc-1.13-5a8f6095/`
+and `out/cfcore/cfw2/`:
+
+- The card: the first build's card copied onto this one's freshly
+  formatted card with `tools/ekfscopy.py` (45 folders, 1,162 files, none
+  needing resampling), then `--worker first-run FWDIR --rebuild`.
+  `tools/record.py` wants `DT2_DEVICES` to be the firmware folder's own
+  `devices/`, which has this build's entry; the repo's does not know it.
+- The recording (24,000 steps, 3.011 s) replays the same on the
+  interpreter and with 4,533 translated blocks: every step state, 610,542
+  host reads, 31,057 exception entries, the final memory and the audio.
+  No new instruction was met.
+
+Checked with `cfpoke` on the build with the blocks, and the same on the
+interpreter:
+
+| Check | Result |
+| --- | --- |
+| Opened without the card file | refused |
+| The first build's state on this build's blocks | refused: "this machine runs another firmware than this build's translated blocks are for" |
+| FUNCTION + MACHINE with Sample on the track | Root, 14 entries, three to a screen |
+| Central Sidstation / One Shots / Long Synth, first file | "Sample loaded to track 1"; pad T1 peaks at 15% and dies away over 0.6 s |
+| A project saved to slot 04 (PUSH on the name, PUSH on Yes) | "Save OK"; 138 card commands, 8,262 sectors kept |
+| That machine saved and opened again, pad T1 | the same levels |
+
+For the Mac, `out/cfcore/for-mac/` has this build's three files and a
+`SHA256SUMS`; the first build's are in `out/cfcore/for-mac-d86497ea/`.
+`native/ios/MAC-BUILD.md` is the checklist for building and installing
+from them, written to be followed by a coding agent without judgment:
+it has the two `cfpoke` checks above with their exact output.
+
+**[C]** `Engine.swift` reopened the bundled state without its card file
+when a kept machine stopped in its first two seconds, so with a card
+file that fallback could not have run. It passes the card now. Not
+compiled: no Swift here.
+
+[O] Not built for or run on a device. [O] The new features were not
+tried, only the paths above. [O] Speed was not measured.
+
 ## What the Python side did per second (the scope that was ported)
 
 Counted before the port, for the playing Cycles, per emulated second at
