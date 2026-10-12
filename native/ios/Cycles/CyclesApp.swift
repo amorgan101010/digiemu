@@ -20,27 +20,25 @@ struct CyclesApp: App {
                     UIApplication.shared.isIdleTimerDisabled = true
                     engine.start()
                 }
-                .onChange(of: phase) { _, now in
+                .onChange(of: phase) { was, now in
                     // Foreground only: no background audio yet.
                     if now == .active {
                         engine.resume()
+                    } else if now == .inactive, was == .active {
+                        // The app switcher, Control Centre: the app may be
+                        // closed from here with no time given, and what the
+                        // firmware saved to its +Drive is only in the kept
+                        // machine. Written now, while it still runs.
+                        engine.save()
                     } else if now == .background {
                         engine.pause()
-                        // Time to write the machine out before the app is
-                        // suspended.
-                        let app = UIApplication.shared
-                        var task = UIBackgroundTaskIdentifier.invalid
-                        let finish = {
-                            DispatchQueue.main.async {
-                                if task != .invalid {
-                                    app.endBackgroundTask(task)
-                                    task = .invalid
-                                }
-                            }
-                        }
-                        task = app.beginBackgroundTask(withName: "save", expirationHandler: finish)
-                        engine.save(then: finish)
+                        // Wait for the file here: the app is suspended, or
+                        // closed, once this returns.
+                        engine.saveNow()
                     }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
+                    engine.saveNow()
                 }
         }
     }

@@ -5,8 +5,9 @@
 // the main thread when they change.
 //
 // The machine is kept: that thread writes the whole of it to
-// Documents/cycles.save when the app goes to the background, and a minute
-// after the panel was last touched, and the app starts from that file when
+// Documents/cycles.save when the app leaves the foreground (CyclesApp.swift),
+// and ten seconds after the panel was last touched, and the app starts from
+// that file when
 // there is one. Deleting the file (it shows in the Files app) starts from
 // the bundled state again.
 import AVFoundation
@@ -61,6 +62,17 @@ final class Engine: ObservableObject {
         lock.lock()
         saves.append(done)
         lock.unlock()
+    }
+
+    /// Write the machine out and wait for the file, at most `seconds`: for
+    /// when the app is about to be suspended or closed, and nothing after
+    /// this call is sure to run. -> whether it was written in that time.
+    @discardableResult
+    func saveNow(waiting seconds: Double = 3) -> Bool {
+        guard running else { return false }
+        let written = DispatchSemaphore(value: 0)
+        save { written.signal() }
+        return written.wait(timeout: .now() + seconds) == .success
     }
 
     private func takeSaves() -> [() -> Void] {
@@ -239,12 +251,12 @@ final class Engine: ObservableObject {
             } else {
                 usleep(1000)
             }
-            // Keep the machine: when asked, and a minute after the panel
+            // Keep the machine: when asked, and ten seconds after the panel
             // was last touched (not while it only plays: nothing changes
             // that a later save would miss, and each save is 50 MB).
             var waiting = takeSaves()
             let asked = !waiting.isEmpty
-            if !asked, touched, DispatchTime.now().uptimeNanoseconds - lastTouch >= 60_000_000_000 {
+            if !asked, touched, DispatchTime.now().uptimeNanoseconds - lastTouch >= 10_000_000_000 {
                 // While it plays: only once the output has all the sound
                 // the ring holds (about 150 ms) to cover the copy, and the
                 // file is written by another thread.
