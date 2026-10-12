@@ -37,6 +37,14 @@ and report. Everything else is already done and checked on the PC.
 6. Do not delete the old files. Step 3 moves them aside.
 7. If a check does not give the expected result, stop there and write the
    report at the end of this file. Do not try other approaches.
+8. Two steps (4 and 5) compile for a long time, 5 to 30 minutes each, and
+   print nothing meanwhile. That is not a hang. Their commands write to a
+   log file and print `EXIT 0` when they are done. If your shell tool
+   gives up waiting before `EXIT` is printed, the build is still running:
+   do not start it again. Wait, and look with
+   `pgrep -l "cargo|rustc|xcodebuild"` (prints lines while something
+   is still building, nothing when all are done) and `tail -3` on the log. Never have two builds running
+   at once, and never run step 4 and step 5 at the same time.
 
 ## Step 0: where you are
 
@@ -58,12 +66,17 @@ xcodebuild -version
 xcodegen --version
 cargo --version
 rustup target list --installed | grep aarch64-apple-ios
+df -h .
 ```
 
-Expected: each prints a version, and the last prints `aarch64-apple-ios`.
-If the last prints nothing, run `rustup target add aarch64-apple-ios` and
+Expected: each prints a version, and the fourth prints `aarch64-apple-ios`.
+If the fourth prints nothing, run `rustup target add aarch64-apple-ios` and
 check again. If `xcodegen` is missing, run `brew install xcodegen`. Anything
 else missing: stop and report.
+
+`df -h .` must show at least 5 GB under `Avail`. The card file ends up on
+the disk four times (580 MB each) and the app once more. With less than
+5 GB free, stop and report: do not delete anything to make room.
 
 ## Step 2: get the code
 
@@ -101,7 +114,9 @@ Move what is there now aside, then copy the new files in:
 ```sh
 mkdir -p out/cfcore/before-5a8f6095
 for f in aot_gen.rs cycles-play.start cycles-play.card; do
-  if [ -f "out/cfcore/$f" ]; then mv "out/cfcore/$f" out/cfcore/before-5a8f6095/; fi
+  if [ -f "out/cfcore/$f" ] && [ ! -e "out/cfcore/before-5a8f6095/$f" ]; then
+    mv "out/cfcore/$f" out/cfcore/before-5a8f6095/
+  fi
 done
 cp ~/cfcore-files/aot_gen.rs ~/cfcore-files/cycles-play.start \
    ~/cfcore-files/cycles-play.card ~/cfcore-files/SHA256SUMS out/cfcore/
@@ -112,22 +127,24 @@ git status --short
 Expected: three lines ending `: OK` again, and `git status --short` shows
 nothing under `out/`.
 
-If `out/cfcore/before-5a8f6095/` already has files in it from an earlier
-attempt, the `mv` is skipped for files no longer in `out/cfcore/`: that is
-fine. Do not empty that folder.
+This step can be run again safely: a file already in
+`out/cfcore/before-5a8f6095/` is never replaced, and the `cp` just writes
+the new files again. Do not empty that folder.
 
 ## Step 4: check the files on the Mac itself
 
 This builds the command-line tools for the Mac with the new translated
-code, and runs the machine for a moment. It takes 5 to 8 minutes and
-prints little while it works. Wait for it.
+code, and runs the machine for a moment. The build is one of the two long
+ones (rule 8): 5 to 30 minutes, with nothing printed until it ends.
 
 ```sh
-(cd native/cfcore && CFCORE_AOT="$PWD/../../out/cfcore/aot_gen.rs" cargo build --release)
+(cd native/cfcore && CFCORE_AOT="$PWD/../../out/cfcore/aot_gen.rs" cargo build --release) > out/cfcore/mac-tools-build.log 2>&1; echo EXIT $?
+tail -3 out/cfcore/mac-tools-build.log
 ```
 
-Expected last line: `Finished` followed by `release profile`. Warnings are
-fine. An `error` is not: stop and report.
+Expected: `EXIT 0`, and the log's last line has `Finished` and `release`
+in it. Warnings in the log are fine. Any other `EXIT` number: stop and
+report the last 40 lines of the log (`tail -40 out/cfcore/mac-tools-build.log`).
 
 First check, that the state opens with its card:
 
@@ -150,12 +167,17 @@ whole command, it is one line:
 native/cfcore/target/release/cfpoke out/cfcore/cycles-play.start --ips 211700000 --card out/cfcore/cycles-play.card key 0 5 1 run 0.05 key 0 5 0 run 0.6 key 0 0 1 run 0.1 key 0 0 0 run 0.4 turn 3 1 run 0.3 turn 3 1 run 0.3 turn 3 1 run 0.3 turn 3 1 run 0.3 turn 3 1 run 0.3 turn 3 1 run 0.3 run 0.4 key 3 7 1 run 0.1 key 3 7 0 run 0.3 key 1 2 1 run 0.1 key 0 0 1 run 0.1 key 0 0 0 run 0.1 key 1 2 0 run 0.5 turn 3 1 run 0.3 turn 3 1 run 0.3 run 0.4 key 3 7 1 run 0.1 key 3 7 0 run 0.3 run 0.5 turn 3 1 run 0.3 run 0.4 key 3 7 1 run 0.1 key 3 7 0 run 0.3 run 0.5 turn 3 1 run 0.3 run 0.4 key 3 7 1 run 0.1 key 3 7 0 run 0.3 run 0.5 key 3 7 1 run 0.1 key 3 7 0 run 0.3 run 1 key 1 0 1 run 0.1 key 1 0 0 run 0.4 key 1 0 1 run 0.1 key 1 0 0 run 0.4 key 1 0 1 run 0.1 key 1 0 0 run 0.4 run 0.5 pad 5 110 listen 0.6 card
 ```
 
-Expected, exactly these two lines:
+Expected, these two lines:
 
 ```
 peak %: 15 10 9 9 8 7 8 6 5 3 3 3
 card: 36 commands, 1196032 bytes moved, 0 sectors kept here and 1133517 in its file, of 3866624
 ```
+
+The `card:` line must be exactly that. The `peak %:` line is the sound's
+level every 50 ms: it should be those numbers. If it differs by 1 here
+and there, that is fine, note it in the report. If it is all `0`, no
+sample was loaded: stop and report.
 
 If either check prints something else (for example `this machine runs
 another firmware than this build's translated blocks are for`, or
@@ -164,13 +186,18 @@ other or the code. Stop and report the exact output.
 
 ## Step 5: build the iOS library and the Xcode project
 
+This is the other long build (rule 8): 5 to 30 minutes, nothing printed
+until it ends. Make sure step 4's build has finished first.
+
 ```sh
-native/ios/build.sh
+native/ios/build.sh > out/cfcore/ios-build.log 2>&1; echo EXIT $?
+tail -3 out/cfcore/ios-build.log
 ls -l out/cfcore/ios/libcfcore.a out/cfcore/ios/cycles-play.start out/cfcore/ios/cycles-play.card
 ```
 
-This takes about 4 minutes. Expected: it ends with xcodegen saying it
-created the project, and the `ls` lists all three files. The `.card` there
+Expected: `EXIT 0`, the log ends with xcodegen saying it created the
+project, and the `ls` lists all three files. Any other `EXIT` number: stop
+and report the last 40 lines of the log. The `.card` there
 must be about 580 MB. If `cycles-play.card` is missing from the `ls`, step
 3 was not done: stop.
 
@@ -207,12 +234,17 @@ cd native/ios
 xcodebuild -project CyclesBench.xcodeproj -scheme Cycles \
   -configuration Release -destination generic/platform=iOS \
   -derivedDataPath ../../out/cfcore/ios/derived \
-  -allowProvisioningUpdates DEVELOPMENT_TEAM=TEAM build
+  -allowProvisioningUpdates DEVELOPMENT_TEAM=TEAM build \
+  > ../../out/cfcore/xcodebuild.log 2>&1; echo EXIT $?
 cd ../..
+tail -5 out/cfcore/xcodebuild.log
 du -sh out/cfcore/ios/derived/Build/Products/Release-iphoneos/Cycles.app
 ```
 
-Expected: `** BUILD SUCCEEDED **`, and the app is about 640 MB. An app of
+This takes a few minutes (it copies the card into the app). Expected:
+`EXIT 0`, `** BUILD SUCCEEDED **` in the log's last lines, and the app is
+about 640 MB. To see the errors of a failed build:
+`grep -n "error:" out/cfcore/xcodebuild.log`. An app of
 about 60 MB means the card is not in it: stop and report.
 
 Only the `Cycles` scheme. Do not build or install `CyclesBench`: it has no
