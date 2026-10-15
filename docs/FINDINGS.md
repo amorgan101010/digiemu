@@ -7,6 +7,138 @@ Evidence classes used below:
 **[V]** verified by running it here · **[D]** documented by prior research, not
 re-checked · **[O]** open / nobody has established this.
 
+## Digitakt mk1 OS 1.53 — transparent MIDI routing investigation
+
+This is deliberately a separate, emulator-scoped finding from the Digitakt II
+work below. It uses a private Digitakt mk1 OS 1.53 setup; no firmware, dump,
+snapshot, card or trace is in this repository.
+
+**[C]** The reported controller → Digitakt MIDI IN → Digitakt MIDI OUT →
+Digitone MIDI IN topology uses **MIDI OUT/SYNC A**, not the physical MIDI
+THRU/SYNC B jack. The initial THRU framing was therefore wrong for the
+reported failure. A physical THRU result remains a separate, unmeasured unit
+question.
+
+### Reproducer and image identity **[V]**
+
+- Stock input: Digitakt mk1 OS 1.53, SHA-256
+  `9bdd44bb6102fb25c143cfab97bc92b7a89c463f795d3112dce89771e29bcc92`.
+  Its extracted MAIN OS SHA-256 is
+  `4b47a9507758ca5669ca02ab2c0374d2c04c98aece445408295cc1dcb265c5df`.
+  A second agent independently checked both hashes against the private setup.
+- The private first run completed its bounded ladder/intro/settle stages and
+  the corpus resumed the settled `gui.snap`. Each case used
+  `tools/midicorpus.py --limit 120000000`; its largest case used 47,113,371
+  guest instructions. The JSON result is written under ignored `out/midi/`.
+- The hash-bound runtime snapshot has VBR `0x40000000`, vector 156 pointing
+  to `0x40002454`; its TCD36 has UART9's receive data register as source,
+  byte transfers and a 32 KiB destination modulo. A second agent independently
+  checked the vector slot and descriptor. The vector table is runtime RAM,
+  not a MAIN-OS image table.
+
+### Corpus result: no emulator ingress, ring, or receive-callback loss **[V]**
+
+`tools/midicorpus.py` injects a byte stream after the host MIDI callback,
+records each channel-36 ring delivery, counts the firmware's vector-156 and
+receive-callback entries, and records the firmware-driven UART9 OUT model.
+For every case below, `ring == input` byte-for-byte and the firmware receive
+callback count equals the input byte count. This is a receive-to-callback
+observation, not a claim that the stock parser accepts every resulting message
+for its own musical behavior.
+
+| case | bytes | UART9 OUT bytes |
+|---|---:|---:|
+| note on/off and velocity-zero off, all 16 channels | 144 | 0 |
+| polyphonic aftertouch, all 16 channels | 96 | 0 |
+| CC 0–127, all 16 channels | 6,144 | 0 |
+| breath controller (CC 2), all 16 channels | 192 | 0 |
+| program change, all 16 channels | 64 | 0 |
+| channel aftertouch, all 16 channels | 64 | 0 |
+| pitch bend minimum/centre/maximum, all 16 channels | 144 | 0 |
+| system common | 8 | 0 |
+| SysEx lengths 4 / 19 / 259 | 4 / 19 / 259 | 0 / 0 / 0 |
+| clock/start/continue/stop/active sensing | 5 | 0 |
+| real-time bytes interleaved with channel and SysEx data | 18 | 0 |
+| running status | 19 | 0 |
+| rapid back-to-back note traffic | 12,288 | 0 |
+| one second of DIN wire-rate traffic | 31,249 | 0 |
+
+The receive ISR reaches a firmware-installed callback once per delivered byte
+in these runs. The callback address and its precise parser/routing contract
+were traced locally but need an independent review before being promoted to
+**[V]**. The user-facing MIDI configuration was left at first-boot defaults;
+the emulator documentation says `INPUT FROM` is USB there, not MIDI **[D]**.
+No result above establishes stock musical handling when `INPUT FROM` is MIDI.
+
+### What the zero UART9 output does, and does not, mean **[V][O]**
+
+The zeroes above are from the firmware-driven **MIDI OUT/SYNC A** UART9
+transmitter model—the relevant endpoint for the reported cable topology.
+They are still not a routing result: the run used first-boot `INPUT FROM`
+USB rather than MIDI, and no MIDI-track/auto-channel forwarding configuration
+was established. They are consistent with configuration filtering, not yet
+evidence about which message types stock forwarding drops.
+
+Classification so far:
+
+| stage | result | classification |
+|---|---|---|
+| host ingress, after correction below | all corpus bytes retained | not a loss |
+| UART9/eDMA channel-36 ring | all corpus bytes retained in order | not a loss |
+| vector 156 / firmware receive callback | one callback entry per byte | not a loss at this boundary |
+| firmware MIDI OUT/SYNC A | zero bytes | relevant endpoint, but configuration not established |
+| physical THRU/SYNC B | endpoint now modeled separately, no stock route installed | separate issue; requires unit capture |
+
+### Candidate raw MIDI-OUT route model **[V]**
+
+The emulator now has a separate raw candidate route into the **MIDI OUT/SYNC
+A** capture sink (`MidiOut.route_raw`), distinct from both firmware-driven
+UART9 output and the separately modeled THRU/SYNC B endpoint. A second bounded
+corpus run used `--candidate-transparent-out-model`. All 16 cases matched
+input byte-for-byte at that candidate sink, including running status,
+interleaved real-time, active sensing, SysEx and the 31,249-byte wire-rate
+case (47,113,371 guest instructions; limit 120,000,000).
+
+This validates only the emulator's proposed pre-parser copy model. It bypasses
+the unimplemented firmware writer, so it does **not** establish UART9 queue
+capacity, serial timing, stock firmware behavior, DIN-sync interaction or any
+physical jack behavior.
+
+### Corrected emulator ingress defect **[V]**
+
+`HostMidi._open_in` had asked RtMidi to discard Active Sensing (`0xFE`). That
+made a transparent-byte test untrustworthy before the guest saw it. It now
+keeps active sensing, SysEx and timing bytes; `tests/test_midi.py` has a
+regression test for the exact RtMidi options. This fixes the test path only;
+it does not add a THRU endpoint or claim physical behavior.
+
+### Unresolved work and hook boundary **[O]**
+
+The reported route needs an emulator project configured for `INPUT FROM=MIDI`,
+`OUTPUT TO=MIDI`, MIDI OUT port function MIDI, and the same auto-channel/MIDI
+track forwarding setup as the unit. The next stock run must compare raw DIN
+ingress to firmware-driven UART9 output for every corpus case. The separate
+THRU/SYNC B emulator endpoint exists only for separate physical-jack work;
+it is not evidence about this route.
+
+The current published Modwerk Digitakt core interface has no receive or route
+event; only UI/settings/render events are published. A transparent
+MIDI-IN-to-OUT module therefore cannot be implemented as a package today. The
+smallest proposed shared-core addition is an ordered, bounded `ev_midi_rx`
+dispatch at the byte handoff after channel-36 ring consumption and before the
+stock MIDI parser. Its proposed C/assembly ABI is `void f(const uint8_t
+*data, uint16_t count)` with `d0–d1/a0–a1` scratch; stock continuation is
+unconditionally called after observers. The core owns one fixed-size raw
+MIDI-OUT writer; it must preserve wire order, retain real-time interleaving
+and running status verbatim, bound each call and account overflow/drops. A
+module would claim a distinct `settings:MIDI IN TO OUT` row and request that
+route only while ON; OFF leaves the stock route untouched.
+
+This is a proposal, not an implemented interface, patch site, timing result or
+hardware claim. It requires Modwerk owner review before any shared-core or
+builder change, followed by OS-1.53/1.54 site derivation, independent byte
+guards, resource measurements and physical acceptance captures.
+
 ## Scope, and the 2.01 firmwares **[V]**
 
 Everything address-specific in this file is **Digitakt II 1.15C**, whose MAIN

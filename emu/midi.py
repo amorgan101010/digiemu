@@ -37,9 +37,12 @@ The host side is python-rtmidi, an optional dependency from source (`uv sync
 --extra midi`) that the Windows app bundles: a virtual input port where the
 platform has them (Linux, macOS), or an existing port named by
 DIGIEMU_MIDI_IN (a substring of its name), and a virtual output port of the
-same name (DIGIEMU_MIDI_OUT likewise). Windows has no virtual ports (RtMidi's
-WinMM backend cannot make them), so there a DAW connects through a loopback
-port, which is chosen like any other device.
+same name (DIGIEMU_MIDI_OUT likewise).  The separate THRU/SYNC B circuit is a
+second, raw-byte virtual output named ``<product> THRU``; it is deliberately
+not fed from UART9 or enabled by default.  A caller representing a tested
+route must call :class:`MidiThru` explicitly.  Windows has no virtual ports
+(RtMidi's WinMM backend cannot make them), so there a DAW connects through a
+loopback port, which is chosen like any other device.
 """
 import collections
 import heapq
@@ -167,6 +170,29 @@ class MidiIn:
         self.raised = 0             # vector 156 taken
         self.deferred = 0           # boundaries where it could not be taken
         self.late = 0               # bytes whose slot had already passed
+        # Explicit observers at the receive-to-parser boundary.  Nothing is
+        # registered in a stock emulator: this is how a candidate firmware
+        # route can be tested without confusing THRU/SYNC B with UART9 OUT.
+        self._pre_parser_taps = []
+        self.tapped = 0
+
+    def add_pre_parser_tap(self, sink):
+        """Call ``sink(bytes)`` after DMA-ring delivery, before vector 156.
+
+        The data is the original serial byte stream, not Parser output: it
+        retains running status, incomplete/malformed sequences and realtime
+        bytes at their original positions.  The caller owns the routing and
+        bounded-output policy; a stock MidiIn has no taps.
+        """
+        self._pre_parser_taps.append(sink)
+
+    def _deliver_bytes(self, m, data):
+        """Put raw bytes in the eDMA ring, then notify route observers."""
+        feed(m, data)
+        self.delivered += len(data)
+        for sink in tuple(self._pre_parser_taps):
+            sink(bytes(data))
+        self.tapped += len(data)
 
     def put(self, data):
         now = time.monotonic()
@@ -318,8 +344,7 @@ class MidiIn:
         until = done + self.WINDOW_S * self.ips
         while self._queue and self._queue[0][0] <= until:
             data.append(heapq.heappop(self._queue)[2])
-        feed(self.m, data)
-        self.delivered += len(data)
+        self._deliver_bytes(self.m, data)
         if self.m.raise_vector(RX_VECTOR, level=level):
             self.raised += 1
             return True
@@ -338,14 +363,47 @@ class MidiIn:
         with self._lock:
             data = bytes(self._pending[:MAX_FEED])
             del self._pending[:MAX_FEED]
-        feed(m, data)
-        self.delivered += len(data)
+        self._deliver_bytes(m, data)
         # Bytes already in the ring are drained by the next vector if this
         # one is not taken, so nothing is lost either way.
         if m.raise_vector(RX_VECTOR, level=level):
             self.raised += 1
             return True
         return False
+
+
+class MidiThru:
+    """A raw physical MIDI THRU/SYNC B endpoint.
+
+    This is separate from :class:`MidiOut`, which models firmware writes to
+    UART9 (MIDI OUT/SYNC A).  THRU accepts only a caller-selected MIDI route;
+    in ``sync`` mode it emits nothing, modelling that the shared jack is not
+    available for MIDI.  It never parses or reconstructs data, so a capture
+    can compare the exact byte sequence sent to it.
+    """
+
+    MIDI, SYNC = 'midi', 'sync'
+
+    def __init__(self, sink):
+        self.sink = sink
+        self.function = self.MIDI
+        self.sent = 0
+        self.suppressed = 0
+
+    def set_function(self, function):
+        if function not in (self.MIDI, self.SYNC):
+            raise ValueError('THRU function must be midi or sync')
+        self.function = function
+
+    def route(self, data):
+        """Emit one exact raw-byte stream when the jack is in MIDI mode."""
+        data = bytes(data)
+        if self.function != self.MIDI:
+            self.suppressed += len(data)
+            return
+        self.sent += len(data)
+        if data:
+            self.sink(data)
 
 
 class MidiOut:
@@ -434,6 +492,18 @@ class MidiOut:
         self.sent += len(data)
         if data:
             self.sink(data)
+
+    def route_raw(self, data):
+        """Model a proposed raw route into MIDI OUT/SYNC A.
+
+        This deliberately bypasses UART9 register and eDMA emulation: a
+        candidate core writer has no stock firmware implementation to drive
+        yet.  It gives corpus tests a distinct *MIDI OUT* raw-byte sink, not
+        a claim about transmitter timing, queue bounds, or a physical port.
+        Firmware-originated output remains observable through ``_on_utb`` and
+        ``_on_dma`` above.
+        """
+        self._out(bytes(data))
 
     # -- longrun.spin event source ------------------------------------------
     BYTE_S = 320e-6
@@ -559,15 +629,14 @@ def port_name(full, winmm=False):
 
 
 class HostMidi:
-    """The host's side of the DIN ports: a virtual input and output named
-    `name` where the platform has them (Linux, macOS), for a DAW to connect
-    to, and one chosen device input and output (set_input, set_output), for
-    a controller or a synth without any patching.
+    """The host's side of the DIN ports.
 
-    Messages from either input go to `sink(bytes)`; send() takes the
-    firmware's byte stream and sends whole messages to both outputs.
-    DIGIEMU_MIDI_IN and DIGIEMU_MIDI_OUT pick a device by a substring of
-    its name at start.
+    ``name`` is MIDI IN/MIDI OUT; ``name + ' THRU'`` is the distinct physical
+    THRU/SYNC B output.  Inputs go to ``sink(bytes)``.  ``send()`` turns the
+    firmware's UART9 stream into host MIDI messages, while ``send_thru()``
+    writes an already-routed raw serial stream unchanged.  The latter is not
+    called unless a route (for example a candidate pre-parser hook) asks for
+    it, so exposing the endpoint does not invent stock THRU behaviour.
     """
 
     def __init__(self, name, sink):
@@ -577,9 +646,11 @@ class HostMidi:
         self._lock = threading.Lock()
         self._parser = Parser()
         self.problems = []
-        self._vin = self._vout = None
-        self._din = self._dout = None
-        self.input = self.output = None             # chosen devices' names
+        self._vin = self._vout = self._tvout = None
+        self._din = self._dout = self._tdout = None
+        self.input = self.output = self.thru_output = None
+        # Chosen devices' names.  The THRU port is independent of MIDI OUT:
+        # connecting it must never create a feedback route to MIDI IN.
         try:
             self._vin = self._open_in(lambda p: p.open_virtual_port(name))
         except Exception as exc:                          # noqa: BLE001
@@ -590,9 +661,17 @@ class HostMidi:
         except Exception as exc:                          # noqa: BLE001
             self._vout = None
             self.problems.append('no virtual MIDI output (%s)' % exc)
+        try:
+            self._tvout = self._rt.MidiOut(name=self.name + ' THRU')
+            self._tvout.open_virtual_port(self.name + ' THRU')
+        except Exception as exc:                          # noqa: BLE001
+            self._tvout = None
+            self.problems.append('no virtual MIDI THRU output (%s)' % exc)
         for env, pick, ports in (('DIGIEMU_MIDI_IN', self.set_input,
                                   self.inputs),
                                  ('DIGIEMU_MIDI_OUT', self.set_output,
+                                  self.outputs),
+                                 ('DIGIEMU_MIDI_THRU', self.set_thru_output,
                                   self.outputs)):
             want = os.environ.get(env)
             if want:
@@ -604,8 +683,10 @@ class HostMidi:
 
     def _open_in(self, how):
         port = self._rt.MidiIn(name=self.name)
-        # Keep SysEx and clock; drop active sensing.
-        port.ignore_types(sysex=False, timing=False, active_sense=True)
+        # A DIN input is a byte stream. Keep every MIDI class here: in
+        # particular Active Sensing (0xFE) is real-time and must not vanish
+        # before the firmware has had a chance to see or route it.
+        port.ignore_types(sysex=False, timing=False, active_sense=False)
         try:
             how(port)
         except Exception as exc:
@@ -618,7 +699,8 @@ class HostMidi:
     def virtual(self):
         """True if the virtual ports opened. Windows has none: a DAW needs a
         loopback port there."""
-        return self._vin is not None or self._vout is not None
+        return any(port is not None for port in
+                   (self._vin, self._vout, self._tvout))
 
     def _names(self, port):
         """-> the names of the ports `port` lists, as a saved choice keeps
@@ -677,6 +759,23 @@ class HostMidi:
             with self._lock:
                 self._dout, self.output = port, name
 
+    def set_thru_output(self, name):
+        """Choose an external physical-THRU capture port (None: virtual only)."""
+        with self._lock:
+            old, self._tdout, self.thru_output = self._tdout, None, None
+        if old is not None:
+            old.close_port()
+            old.delete()
+        if name:
+            port = self._rt.MidiOut(name=self.name + ' THRU')
+            try:
+                port.open_port(self._index(port, name))
+            except Exception as exc:
+                port.delete()
+                raise OSError(str(exc)) from exc
+            with self._lock:
+                self._tdout, self.thru_output = port, name
+
     def send(self, data):
         with self._lock:
             for msg in self._parser.feed(data):
@@ -684,11 +783,23 @@ class HostMidi:
                     if port is not None:
                         port.send_message(msg)
 
+    def send_thru(self, data):
+        """Send a THRU wire capture without parsing or changing its bytes."""
+        data = bytes(data)
+        if not data:
+            return
+        with self._lock:
+            for port in (self._tvout, self._tdout):
+                if port is not None:
+                    port.send_message(data)
+
     def close(self):
         self.set_input(None)
         self.set_output(None)
+        self.set_thru_output(None)
         with self._lock:
-            ports, self._vin, self._vout = (self._vin, self._vout), None, None
+            ports, self._vin, self._vout, self._tvout = (
+                (self._vin, self._vout, self._tvout), None, None, None)
         for port in ports:
             if port is not None:
                 port.close_port()
