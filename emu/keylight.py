@@ -17,7 +17,10 @@ runs nothing.
 Nothing is saved on the keyboard: colours and effect are set in its RAM, so
 unplugging it also restores what it had. Without such a keyboard, or without
 access to its hidraw node, this does nothing. DIGIEMU_KEYLIGHT=0 turns it
-off.
+off, and so does ELEKTREMU_KEYLIGHT=0, which the Elektremu panels honour too.
+
+`python3 -m emu.keylight serve` is the same thing for a program that is not
+Python (Elektremu's native JUCE panels): see Broker.
 
 The keyboard is found by its raw HID interface (usage page 0xFF60) and has
 to be the 84-key 75% layout below: its LEDs are numbered in reading order,
@@ -27,6 +30,9 @@ import glob
 import json
 import os
 import select
+import signal
+import sys
+import threading
 import time
 
 try:
@@ -133,6 +139,13 @@ def by_group(groups):
     return out
 
 
+def disabled(environ=None):
+    """-> True if the user has turned the keyboard's lights off."""
+    environ = os.environ if environ is None else environ
+    return '0' in (environ.get('DIGIEMU_KEYLIGHT', ''),
+                   environ.get('ELEKTREMU_KEYLIGHT', ''))
+
+
 def find():
     """-> the hidraw path of a Keychron's raw HID interface, or None."""
     for sys_dir in sorted(glob.glob('/sys/class/hidraw/hidraw*')):
@@ -198,11 +211,18 @@ class Keyboard:
             out += [tuple(data[i * 3:i * 3 + 3]) for i in range(n)]
         return out
 
+    def need(self, command, *args):
+        """A Keychron RGB command that has to be accepted: OSError if not,
+        so that half a picture is not taken for a whole one."""
+        if self.rgb(command, *args) is None:
+            raise OSError('the keyboard did not accept RGB command %#x'
+                          % command)
+
     def set_colours(self, hsv):
         for start in range(0, len(hsv), PER_PACKET):
             part = hsv[start:start + PER_PACKET]
-            self.rgb(PER_KEY_SET_COLOR, start, len(part),
-                     *(c for colour in part for c in colour))
+            self.need(PER_KEY_SET_COLOR, start, len(part),
+                      *(c for colour in part for c in colour))
 
     def get_regions(self, count):
         out = []
@@ -217,7 +237,7 @@ class Keyboard:
     def set_regions(self, regions):
         for start in range(0, len(regions), REGIONS_PER_PACKET):
             part = regions[start:start + REGIONS_PER_PACKET]
-            self.rgb(MIXED_SET_REGIONS, start, len(part), *part)
+            self.need(MIXED_SET_REGIONS, start, len(part), *part)
 
     def get_effects(self):
         """-> each region's effect list, EFFECT_LEN bytes an entry."""
@@ -238,8 +258,8 @@ class Keyboard:
         for layer, entries in enumerate(lists):
             for start in range(0, len(entries), 3):
                 part = entries[start:start + 3]
-                self.rgb(MIXED_SET_EFFECTS, layer, start, len(part),
-                         *b''.join(part))
+                self.need(MIXED_SET_EFFECTS, layer, start, len(part),
+                          *b''.join(part))
 
     def effect(self):
         answer = self.ask(VIA_GET, VIA_RGB_MATRIX, VIA_EFFECT)
@@ -270,7 +290,7 @@ class KeyLight:
     def _open(self):
         if self.kb is not None:
             return True
-        if os.environ.get('DIGIEMU_KEYLIGHT', '') == '0':
+        if disabled():
             return False
         path = find()
         if path is None or not os.access(path, os.R_OK | os.W_OK):
@@ -347,31 +367,48 @@ class KeyLight:
         # whatever was last drawn on its keys.
         self.kb.set_effect(NO_EFFECT)
         time.sleep(CLEAR_S)
-        self.kb.set_colours([table.get(key, DARK) for key in self.order])
-        self.kb.set_regions([LIT if key in table else UNLIT
-                             for key in self.order])
-        rest = [NO_ENTRY] * (EFFECTS_PER_LAYER - 1)
-        self.kb.set_effects([[PER_KEY_ENTRY, *rest], [NO_ENTRY, *rest]])
-        self.kb.rgb(PER_KEY_SET_TYPE, PER_KEY_SOLID)
-        self.kb.set_effect(MIXED_EFFECT)
+        try:
+            self.kb.set_colours([table.get(key, DARK) for key in self.order])
+            self.kb.set_regions([LIT if key in table else UNLIT
+                                 for key in self.order])
+            rest = [NO_ENTRY] * (EFFECTS_PER_LAYER - 1)
+            self.kb.set_effects([[PER_KEY_ENTRY, *rest], [NO_ENTRY, *rest]])
+            self.kb.rgb(PER_KEY_SET_TYPE, PER_KEY_SOLID)
+            self.kb.set_effect(MIXED_EFFECT)
+        except OSError:
+            # Half a picture: give back what it had if we still can. If not,
+            # the file still has it, and the next restore tries again.
+            try:
+                self._restore()
+            except OSError:
+                pass
+            raise
 
     def restore(self):
         """Give the keyboard back the colours and effect it had, unless
         another panel has lit it since."""
-        if self.kb is not None:
-            self._locked(self._restore)
+        self._locked(self._restore)
 
     def _restore(self):
         owner, saved = self._read()
         if owner != self.me:
             return
-        os.remove(self.state)
+        # An error while painting drops the keyboard but leaves us the
+        # owner of what it had: find it again to give that back.
+        if not self._open():
+            return
         effect, kind, hsv, regions, effects = saved
         self.kb.set_colours(hsv)
         self.kb.set_regions(regions)
         self.kb.set_effects(effects)
         self.kb.rgb(PER_KEY_SET_TYPE, kind)
         self.kb.set_effect(effect)
+        # Only now: if a write above failed, what the keyboard had is
+        # still on file for the next try.
+        try:
+            os.remove(self.state)
+        except FileNotFoundError:
+            pass
 
     def _drop(self):
         """The keyboard went away: forget it, and look again next time."""
@@ -381,3 +418,120 @@ class KeyLight:
         except OSError:
             pass
         self.kb = None
+
+
+# What the panels that are not Python send: group names, never colours, so
+# the palette above stays the one.
+DEBOUNCE_S = 0.15
+
+
+class Broker:
+    """The lights for a program that is not Python, one per panel process.
+
+    `python3 -m emu.keylight serve` reads one JSON object a line from stdin:
+
+        {"show": {"<keysym>": "<group>", ...}}   light these keys
+        {"restore": true}                        the panel lost the focus
+        {"quit": true}                           (or end of input) restore, exit
+
+    and keeps one KeyLight, so the owner token in the state file is the same
+    for the panel's whole life. A panel that crashes closes the pipe, so its
+    lights go back whatever happened to it. A restore waits DEBOUNCE_S, and
+    a show in that time cancels it: window managers deliver the focus
+    leaving one panel before the focus arriving at the next, and the
+    keyboard should not flash what it had in between. The owner check
+    runs when the restore does, so a restore that comes after another panel
+    has lit the keyboard changes nothing.
+    """
+
+    def __init__(self, light, clock=time.monotonic):
+        self.light = light
+        self.clock = clock
+        self.restore_at = None
+
+    @staticmethod
+    def table(keys):
+        """-> keysym -> (h, s, v) from a {keysym: group} the panel sent.
+        What is not a key of the keyboard, or not a group, is ignored."""
+        on_board = {key for row in LAYOUT for key in row}
+        return {key: COLOURS[group] for key, group in keys.items()
+                if key in on_board and group in COLOURS}
+
+    def handle(self, line):
+        """Act on one line. -> False when the panel is done."""
+        try:
+            message = json.loads(line)
+            keys = message.get('show')
+            if isinstance(keys, dict):
+                self.restore_at = None
+                self.light.paint(self.table(keys))
+            elif message.get('restore'):
+                self.restore_at = self.clock() + DEBOUNCE_S
+            elif message.get('quit'):
+                return False
+        except (ValueError, AttributeError, TypeError):
+            pass                 # a line that is not ours: not worth dying for
+        return True
+
+    def timeout(self):
+        """-> seconds to wait for the next line, or None for as long as it
+        takes."""
+        if self.restore_at is None:
+            return None
+        return max(0.0, self.restore_at - self.clock())
+
+    def tick(self):
+        """Do a restore that has waited long enough."""
+        if self.restore_at is not None and self.clock() >= self.restore_at:
+            self.restore_at = None
+            self.light.restore()
+
+    def finish(self):
+        self.restore_at = None
+        self.light.restore()
+
+
+class Stop(Exception):
+    """A signal asked the broker to finish."""
+
+
+def _stop(_signum, _frame):
+    raise Stop()
+
+
+def serve(fd=0, light=None):
+    """Run a Broker on a file descriptor until it ends or a signal comes."""
+    broker = Broker(light or KeyLight())
+    buffer = b''
+    main = threading.current_thread() is threading.main_thread()
+    for number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        if main:
+            signal.signal(number, _stop)
+    try:
+        running = True
+        while running:
+            ready = select.select([fd], [], [], broker.timeout())[0]
+            if ready:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                buffer += chunk
+                while running and b'\n' in buffer:
+                    line, buffer = buffer.split(b'\n', 1)
+                    running = broker.handle(line)
+            broker.tick()
+    except Stop:
+        pass
+    finally:
+        for number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            if main:
+                signal.signal(number, signal.SIG_IGN)
+        try:
+            broker.finish()
+        except Exception as error:              # noqa: BLE001
+            print('keylight: could not restore: %s' % error, file=sys.stderr)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(serve() if sys.argv[1:] == ['serve'] else 2)
