@@ -329,11 +329,16 @@ class Emulator(threading.Thread):
         # menu picks); MIDI out sends what the firmware writes to UART9.
         self.midi_host = None
         self.midi_out = None
+        # A separate physical THRU/SYNC B endpoint.  It is intentionally not
+        # connected to MIDI IN here: stock routing is firmware-owned, and a
+        # candidate transparent route must opt in at the receive boundary.
+        self.midi_thru = None
         self.midi_error = None
         if midi_name:
             try:
                 self.midi_host = midi.HostMidi(midi_name, self.midi_in.put)
                 self.midi_out = midi.MidiOut(self.midi_host.send)
+                self.midi_thru = midi.MidiThru(self.midi_host.send_thru)
                 print('[midi] ports: %s' % midi_name, flush=True)
                 for problem in self.midi_host.problems:
                     print('[midi] %s' % problem, flush=True)

@@ -87,6 +87,45 @@ class MidiInTest(unittest.TestCase):
         mi.deliver(m)
         self.assertEqual(mi.delivered, midi.MAX_FEED + 10)
 
+    def test_pre_parser_tap_sees_the_original_wire_bytes_once(self):
+        m = _machine()
+        got = []
+        mi = midi.MidiIn()
+        mi.add_pre_parser_tap(got.append)
+        # Running status and realtime remain in their original positions;
+        # this deliberately is not Parser output.
+        wire = b'\x90\x3c\xf8\x64\x3d\x00'
+        mi.put(wire)
+        self.assertTrue(mi.deliver(m))
+        self.assertEqual(got, [wire])
+        self.assertEqual(mi.tapped, len(wire))
+
+
+class MidiThruTest(unittest.TestCase):
+    def test_midi_mode_preserves_raw_order_and_sync_mode_emits_nothing(self):
+        got = []
+        thru = midi.MidiThru(got.append)
+        wire = b'\x90\x3c\xf8\x64\x3d\x00\xf0\x7d\x01\xf7\xfe'
+        thru.route(wire)
+        self.assertEqual(got, [wire])
+        self.assertEqual(thru.sent, len(wire))
+        thru.set_function(midi.MidiThru.SYNC)
+        thru.route(b'\xfa\xf8')
+        self.assertEqual(got, [wire])
+        self.assertEqual(thru.suppressed, 2)
+
+
+class MidiOutRouteTest(unittest.TestCase):
+    def test_candidate_raw_route_keeps_wire_bytes_distinct_from_uart_writes(self):
+        got = []
+        out = midi.MidiOut(got.append)
+        wire = b'\x90\x3c\xf8\x64\x3d\x00\xf0\x7d\x01\xf7\xfe'
+        out.route_raw(wire)
+        self.assertEqual(got, [wire])
+        self.assertEqual(out.sent, len(wire))
+        self.assertEqual(out.direct, 0)
+        self.assertEqual(out.dma_runs, 0)
+
 
 class ParserTest(unittest.TestCase):
     def test_running_status_realtime_and_sysex(self):
@@ -369,7 +408,7 @@ class _FakeRtmidi:
             def delete(self):
                 pass
             def ignore_types(self, **kwargs):
-                pass
+                self.ignore = kwargs
             def set_callback(self, fn):
                 self.callback = fn
         class Out(Port):
@@ -395,12 +434,26 @@ class HostOutTest(unittest.TestCase):
         self.host = midi.HostMidi('Digitone (digiemu)', lambda d: None)
     def virtual(self):
         return next(o for o in self.rt.outs if o.opened == 'virtual')
+    def thru_virtual(self):
+        return next(o for o in self.rt.outs
+                    if o.opened == 'virtual' and o.name.endswith(' THRU'))
     def test_the_firmwares_stream_goes_out_as_whole_messages(self):
         self.host.send(b'\x90\x3c')                # half a note: held back
         self.assertEqual(self.virtual().sent, [])
         self.host.send(b'\x64\xf8\x3d\x40')      # rest, clock, running status
         self.assertEqual(self.virtual().sent,
                          [b'\x90\x3c\x64', b'\xf8', b'\x90\x3d\x40'])
+
+    def test_input_keeps_active_sensing_for_the_firmware(self):
+        self.assertEqual(self.host._vin.ignore,
+                         {'sysex': False, 'timing': False,
+                          'active_sense': False})
+    def test_thru_port_sends_raw_bytes_without_parser_reassembly(self):
+        wire = b'\x90\x3c\xf8\x64\x3d\x00\xfe'
+        self.host.send_thru(wire)
+        self.assertEqual(self.thru_virtual().sent, [wire])
+        # Firmware UART9 output remains its own port and parser.
+        self.assertEqual(self.virtual().sent, [])
     def test_a_chosen_device_gets_them_too_and_can_be_dropped(self):
         self.host.set_output('Synth')              # ALSA's 20:0 is not needed
         self.assertEqual(self.host.output, 'Synth')
@@ -450,7 +503,7 @@ class HostWindowsTest(unittest.TestCase):
 
     def test_no_virtual_ports_is_not_an_error(self):
         self.assertFalse(self.host.virtual)
-        self.assertEqual(len(self.host.problems), 2)       # in and out, logged
+        self.assertEqual(len(self.host.problems), 3)       # in, out and THRU, logged
         self.host.send(b'\x90\x3c\x64')                    # nowhere to go yet
 
     def test_devices_are_listed_and_chosen_without_the_index(self):

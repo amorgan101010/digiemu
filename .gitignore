@@ -58,3 +58,6 @@ docs/refs/pgr.txt
 docs/refs/prm.txt
 tools/sharcspec/renders/
 tools/sharcspec/ghidra/SHARC_VISA/
+
+# assistant tooling
+.codex/
