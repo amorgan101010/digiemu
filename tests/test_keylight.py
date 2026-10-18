@@ -357,6 +357,38 @@ class Brokering(unittest.TestCase):
         self.assertEqual(self.kb.state(), self.before)
 
 
+class Coalescing(unittest.TestCase):
+    def setUp(self):
+        self.kb, self.make, self.clock, self.dir = bus(self)
+        self.before = self.kb.state()
+
+    def serve(self, *messages):
+        """Run a helper on a pipe that already holds all of `messages`."""
+        read, write = os.pipe()
+        os.write(write, b''.join(m.encode() + b'\n' for m in messages))
+        os.close(write)
+        keylight.serve(read, FakeLight(self.dir, self.kb))
+        os.close(read)
+
+    def test_a_backlog_of_switches_paints_only_where_the_focus_ended(self):
+        self.serve(show(MD_ISH), RESTORE, show(MM_ISH), RESTORE, show(MD_ISH),
+                   RESTORE, show(MM_ISH))
+        # one paint (no effect, then the mixed one), then the restore at end of input
+        self.assertEqual(self.kb.modes, [keylight.NO_EFFECT, keylight.MIXED_EFFECT,
+                                         self.before[0]])
+        self.assertEqual(self.kb.state(), self.before)
+
+    def test_a_show_that_the_panel_took_back_is_never_painted(self):
+        self.serve(show(MD_ISH), RESTORE)
+        self.assertEqual(self.kb.modes, [])           # nothing was ever lit
+
+    def test_coalesce_keeps_the_last_state_and_a_quit(self):
+        lines = [show(MD_ISH), 'junk', RESTORE, show(MM_ISH), json.dumps({'quit': True}),
+                 show(MD_ISH)]
+        kept = keylight.Broker.coalesce(lines)
+        self.assertEqual(kept, [show(MD_ISH), json.dumps({'quit': True})])
+
+
 class Failing(unittest.TestCase):
     def setUp(self):
         self.kb, self.make, self.clock, self.dir = bus(self)

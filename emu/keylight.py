@@ -473,6 +473,26 @@ class Broker:
             pass                 # a line that is not ours: not worth dying for
         return True
 
+    @staticmethod
+    def coalesce(lines):
+        """-> the lines that matter of those waiting. A paint is about a
+        second of HID traffic, so a panel switched back and forth faster than
+        that would queue a paint for each switch: only where the focus ended
+        up counts, and a quit is kept."""
+        last, quit_line = None, None
+        for line in lines:
+            try:
+                message = json.loads(line)
+                if message.get('quit'):
+                    quit_line = line
+                elif isinstance(message.get('show'), dict) or message.get('restore'):
+                    last = line
+                else:
+                    continue
+            except (ValueError, AttributeError, TypeError):
+                continue
+        return [line for line in (last, quit_line) if line is not None]
+
     def timeout(self):
         """-> seconds to wait for the next line, or None for as long as it
         takes."""
@@ -516,9 +536,11 @@ def serve(fd=0, light=None):
                 if not chunk:
                     break
                 buffer += chunk
-                while running and b'\n' in buffer:
-                    line, buffer = buffer.split(b'\n', 1)
-                    running = broker.handle(line)
+                if b'\n' in buffer:
+                    *lines, buffer = buffer.split(b'\n')
+                    for line in broker.coalesce(lines):
+                        if running:
+                            running = broker.handle(line)
             broker.tick()
     except Stop:
         pass
